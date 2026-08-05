@@ -1,0 +1,25 @@
+{
+    "options": {
+        "paths": {
+            "root": "/data",
+            "fonts": "/data/fonts",
+            "sprites": "/data/sprites",
+            "styles": "/config/styles",
+            "pmtiles": "/data"
+        },
+        "formatQuality": { "png": 90, "webp": 90 },
+        "maxScaleFactor": 2,
+        "serveAllFonts": true,
+        "serveStaticMaps": false
+    },
+
+    "styles": {
+        "glen-light": { "style": "glen-light.json" },
+        "glen-dark":  { "style": "glen-dark.json" },
+        "glen-white": { "style": "glen-white.json" }
+    },
+
+    "data": {
+        "us": { "pmtiles": "us.pmtiles" }
+    }
+}

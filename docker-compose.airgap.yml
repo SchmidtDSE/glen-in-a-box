@@ -1,0 +1,28 @@
+# Air-gap verification overlay.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.airgap.yml up
+#
+# Flips the shared network to `internal: true`, which strips the containers'
+# default route. Any service that still tries to reach the internet fails
+# loudly instead of quietly working on your dev machine and breaking in the
+# field. Published ports keep working — ingress from the host is unaffected.
+#
+# This proves the SERVER side is self-contained. It says nothing about the
+# BROWSER, which runs on your host and has its own network. To verify that
+# half, turn your machine's wifi off and reload the page, or watch the
+# DevTools network tab for any request whose origin is not PUBLIC_ORIGIN.
+# See docs/offline.md.
+
+services:
+  # `pull_policy: never` turns a missing image into an immediate error rather
+  # than a registry timeout — the failure you actually want in an air gap.
+  webapp:  { pull_policy: never }
+  llm:     { pull_policy: never }
+  rustfs:  { pull_policy: never }
+  mcp:     { pull_policy: never }
+  titiler: { pull_policy: never }
+  basemap: { pull_policy: never }
+
+networks:
+  glen:
+    internal: true

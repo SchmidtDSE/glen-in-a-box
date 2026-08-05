@@ -1,0 +1,149 @@
+{
+    "_comment": [
+        "Offline configuration. Two rules govern the URLs in this file.",
+        "",
+        "1. Everything here is BROWSER-facing, so paths are root-relative.",
+        "   That is deliberate: a relative path follows whatever origin the",
+        "   page was loaded from, so the app keeps working if the box is",
+        "   reached as localhost, as a LAN IP, or through another proxy.",
+        "",
+        "2. The STAC catalog is the exception and uses absolute hrefs built",
+        "   from PUBLIC_ORIGIN at seed time, because those same hrefs are read",
+        "   server-side by the MCP server and rewritten to s3:// for DuckDB.",
+        "   A relative path is meaningless to a process with no page origin.",
+        "   Consequence: PUBLIC_ORIGIN must match the URL in the address bar,",
+        "   or child collections 404 while this top-level file looks fine.",
+        "",
+        "Features absent on purpose, not by oversight: geocoder (Nominatim and",
+        "Photon are both remote), voice transcription (needs a speech model",
+        "this box does not ship), and upload (writes to object storage that is",
+        "read-only here). See docs/offline.md."
+    ],
+
+    "catalog": "/data/geo-data/stac/catalog.json",
+    "titiler_url": "/titiler",
+    "mcp_url": "/mcp",
+
+    "auto_approve": true,
+    "upload_enabled": false,
+    "draw_enabled": true,
+    "charts": { "enabled": true },
+    "geolocate": { "button": false, "agent_tool": false },
+    "sidebar": { "enabled": true, "chat_title": "Ask about US census data" },
+
+    "view": { "center": [-98.5, 39.5], "zoom": 4 },
+
+    "links": {
+        "github": "https://github.com/SchmidtDSE/glen-in-a-box",
+        "carbon": false
+    },
+
+    "welcome": {
+        "message": "This is a fully offline copy of the US census explorer — the map, the database, and the language model all run on this machine, with no internet connection. Try asking:",
+        "examples": [
+            "Which five states have the highest median household income?",
+            "Show me counties where more than 20% of people live below the poverty line.",
+            "Color the counties by population density and tell me the ten densest.",
+            "How does median income vary across census tracts in Los Angeles County?"
+        ]
+    },
+
+    "collections": [
+        {
+            "collection_id": "us-census-states",
+            "collection_url": "/data/geo-data/stac/us-census-states/collection.json",
+            "group": "Census geographies",
+            "assets": [
+                {
+                    "id": "pmtiles",
+                    "display_name": "States",
+                    "visible": true,
+                    "default_style": {
+                        "fill-color": "#000000",
+                        "fill-opacity": 0
+                    },
+                    "outline_style": {
+                        "line-color": "#37474F",
+                        "line-width": 1.2
+                    },
+                    "tooltip_fields": ["NAME", "STUSPS", "pop_total", "median_income"]
+                }
+            ]
+        },
+        {
+            "collection_id": "us-census-counties",
+            "collection_url": "/data/geo-data/stac/us-census-counties/collection.json",
+            "group": "Census geographies",
+            "assets": [
+                {
+                    "id": "pmtiles",
+                    "display_name": "Counties — median household income",
+                    "visible": true,
+                    "default_style": {
+                        "fill-color": [
+                            "step",
+                            ["coalesce", ["get", "median_income"], -1],
+                            "#E0E0E0",
+                            0, "#FEE5D9",
+                            45000, "#FCAE91",
+                            60000, "#FB6A4A",
+                            80000, "#DE2D26",
+                            105000, "#A50F15"
+                        ],
+                        "fill-opacity": 0.8
+                    },
+                    "outline_style": {
+                        "line-color": "#FFFFFF",
+                        "line-width": 0.3,
+                        "line-opacity": 0.6
+                    },
+                    "tooltip_fields": ["NAME", "STUSPS", "pop_total", "median_income", "pop_density"],
+                    "legend_type": "categorical",
+                    "legend_classes": [
+                        { "label": "No data", "color": "#E0E0E0" },
+                        { "label": "under $45k", "color": "#FEE5D9" },
+                        { "label": "$45k – $60k", "color": "#FCAE91" },
+                        { "label": "$60k – $80k", "color": "#FB6A4A" },
+                        { "label": "$80k – $105k", "color": "#DE2D26" },
+                        { "label": "$105k and over", "color": "#A50F15" }
+                    ]
+                }
+            ]
+        },
+        {
+            "collection_id": "us-census-tracts",
+            "collection_url": "/data/geo-data/stac/us-census-tracts/collection.json",
+            "group": "Census geographies",
+            "assets": [
+                {
+                    "id": "pmtiles",
+                    "display_name": "Census tracts — median household income",
+                    "visible": false,
+                    "default_style": {
+                        "fill-color": [
+                            "step",
+                            ["coalesce", ["get", "median_income"], -1],
+                            "#E0E0E0",
+                            0, "#EFF3FF",
+                            45000, "#BDD7E7",
+                            60000, "#6BAED6",
+                            80000, "#3182BD",
+                            105000, "#08519C"
+                        ],
+                        "fill-opacity": 0.85
+                    },
+                    "tooltip_fields": ["GEOID", "NAMELSAD", "pop_total", "median_income"],
+                    "legend_type": "categorical",
+                    "legend_classes": [
+                        { "label": "No data", "color": "#E0E0E0" },
+                        { "label": "under $45k", "color": "#EFF3FF" },
+                        { "label": "$45k – $60k", "color": "#BDD7E7" },
+                        { "label": "$60k – $80k", "color": "#6BAED6" },
+                        { "label": "$80k – $105k", "color": "#3182BD" },
+                        { "label": "$105k and over", "color": "#08519C" }
+                    ]
+                }
+            ]
+        }
+    ]
+}

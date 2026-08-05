@@ -1,0 +1,136 @@
+# The single origin. Every other service in the stack is reachable only
+# through a location block here, which is why the browser never issues a
+# cross-origin request and no CORS configuration exists anywhere in this repo.
+#
+# envsubst runs over this file at container start with a strict variable
+# allowlist (see entrypoint.sh) so nginx's own $uri / $host / $remote_addr are
+# left untouched.
+
+# Long-lived, streaming upstreams. Applied per-location below rather than
+# globally so a hung LLM cannot also pin the static file worker.
+proxy_http_version 1.1;
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # No Access-Control-Allow-Origin anywhere in this file, by design. Every
+    # request the browser makes is same-origin; a permissive CORS header would
+    # only widen the surface of a box that may sit on a shared LAN.
+
+    # ── Local LLM ────────────────────────────────────────────────────────────
+    # llama.cpp's OpenAI-compatible surface. The trailing /v1/ matters: the app
+    # posts to <endpoint>/chat/completions, so /api/llm/chat/completions must
+    # land on /v1/chat/completions.
+    location /api/llm/ {
+        proxy_pass http://llm:8080/v1/;
+
+        # Token streaming must not be buffered, or the whole reply lands at
+        # once after a long silence and the UI looks hung.
+        proxy_buffering off;
+        proxy_cache off;
+
+        # A CPU-hosted 8B model generating a long tool-calling turn is slow.
+        # 600s matches geo-agent's own client timeout (agent.js _llmTimeoutMs);
+        # anything shorter makes this hop the weak link in the chain.
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    # ── MCP: SQL, STAC, and hex-tile pyramids ────────────────────────────────
+    # Streamable HTTP transport — SSE downstream, so buffering off again.
+    location /mcp {
+        proxy_pass http://mcp:8000/mcp;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    # mcp-data-server mounts its own /tiles/{ns}/{name}/{z}/{x}/{y}.pbf route
+    # for hex pyramids built by register_hex_tiles, and advertises those URLs
+    # to the browser via MCP_PUBLIC_BASE_URL. This is why TiTiler lives at
+    # /titiler/ and not at the more obvious /tiles/.
+    location /tiles/ {
+        proxy_pass http://mcp:8000/tiles/;
+        proxy_read_timeout 120s;
+    }
+
+    # ── COG rasters ──────────────────────────────────────────────────────────
+    location /titiler/ {
+        proxy_pass http://titiler:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Prefix /titiler;
+        proxy_read_timeout 120s;
+    }
+
+    # ── Object store ─────────────────────────────────────────────────────────
+    # Serves STAC JSON, parquet, and PMTiles. PMTiles is the demanding client
+    # here: it reads archives via HTTP range requests, so Range/If-Range must
+    # pass through untouched and the response must not be buffered into memory
+    # — a buffered proxy would pull whole multi-hundred-MB archives per tile.
+    location /data/ {
+        proxy_pass http://rustfs:9000/;
+        proxy_set_header Host $host;
+        proxy_set_header Range $http_range;
+        proxy_set_header If-Range $http_if_range;
+
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 120s;
+
+        # Bundled data is immutable for the life of a deployment; re-seeding
+        # replaces the objects and you would hard-reload anyway.
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # ── Basemap raster tiles and glyphs ──────────────────────────────────────
+    # tileserver-gl renders these from a local PMTiles extract. Rendering is
+    # CPU work, so cache aggressively: the same few hundred tiles get requested
+    # over and over as a user pans.
+    location /basemap/ {
+        proxy_pass http://basemap:8080/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    # ── Vendored libraries and the geo-agent snapshot ────────────────────────
+    # Content-addressed by image tag rather than by URL, so a long cache is
+    # safe: a rebuild produces a new image, and a new container serves new
+    # bytes from an empty cache.
+    location /vendor/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /app/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # ── App shell ────────────────────────────────────────────────────────────
+    # index.html, config.json, layers-input.json and system-prompt.md are the
+    # deployment's own configuration and change on every re-seed or edit.
+    # Caching them is how you end up debugging a stale catalog for an hour.
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+    }
+
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+}

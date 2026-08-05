@@ -1,0 +1,245 @@
+# glen-in-a-box — a fully offline geo-agent deployment.
+#
+# Six services on one internal network. `webapp` is the ONLY published port:
+# it reverse-proxies every other service, so the browser talks to exactly one
+# origin. That is not a convenience — it is load-bearing:
+#
+#   * No CORS anywhere. Every cross-service call is same-origin.
+#   * No split-brain URLs. Without it, a STAC href would have to be
+#     `rustfs:9000` for the MCP server and `localhost:9000` for the browser,
+#     and no single string satisfies both.
+#   * One knob (PUBLIC_ORIGIN) relocates the whole stack.
+#
+# Route map (see app/nginx.conf.template):
+#   /              → static app + vendored JS/CSS
+#   /api/llm/      → llm:8080/v1/          (OpenAI-compatible)
+#   /mcp           → mcp:8000/mcp          (MCP streamable HTTP)
+#   /tiles/        → mcp:8000/tiles/       (hex pyramids — NOT titiler, see below)
+#   /titiler/      → titiler:8000/         (COG rasters)
+#   /data/         → rustfs:9000/          (S3: parquet, pmtiles, STAC)
+#   /basemap/      → basemap:8080/         (raster tiles + glyphs)
+#
+# The `/tiles/` vs `/titiler/` split is not cosmetic. mcp-data-server mounts
+# its own `/tiles/{namespace}/{name}/{z}/{x}/{y}.pbf` route for hex pyramids
+# built by register_hex_tiles, and it advertises those URLs to the browser
+# using MCP_PUBLIC_BASE_URL. TiTiler therefore cannot own /tiles/.
+
+name: glen-in-a-box
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+
+  # ── Front door ────────────────────────────────────────────────────────────
+  # Built offline-complete: the image contains every JS/CSS byte the browser
+  # needs, including a patched snapshot of geo-agent itself. See app/Dockerfile.
+  webapp:
+    <<: *restart
+    build:
+      context: ./app
+      args:
+        GEO_AGENT_REF: ${GEO_AGENT_REF:-v3.25.0}
+    image: glen-in-a-box/webapp:${TAG:-local}
+    ports:
+      - "${PUBLIC_PORT:-8080}:80"
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      LLM_MODEL_ID: ${LLM_MODEL_ID:-qwen3-8b}
+      LLM_MODEL_LABEL: ${LLM_MODEL_LABEL:-Qwen3 8B (local)}
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [glen]
+
+  # ── Local LLM ─────────────────────────────────────────────────────────────
+  # llama.cpp's OpenAI-compatible server. --jinja is REQUIRED: without it the
+  # server ignores the model's chat template and emits no tool_calls, which
+  # silently reduces the agent to a chatbot that cannot touch the map or run
+  # SQL. Everything in this stack depends on that flag.
+  #
+  # GPU: `docker compose --profile gpu up` swaps in the CUDA image instead.
+  llm:
+    <<: *restart
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >
+      --model /models/${LLM_MODEL_FILE:-Qwen3-8B-Q4_K_M.gguf}
+      --alias ${LLM_MODEL_ID:-qwen3-8b}
+      --host 0.0.0.0 --port 8080
+      --jinja
+      --ctx-size ${LLM_CTX:-32768}
+      --parallel 1
+      --threads ${LLM_THREADS:-8}
+      --cache-type-k q8_0 --cache-type-v q8_0
+    volumes:
+      - ./llm/models:/models:ro
+    healthcheck:
+      # /health returns 503 until weights finish loading — that can take
+      # minutes on a cold CPU start, hence the long start_period.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    networks: [glen]
+
+  # ── Object store ──────────────────────────────────────────────────────────
+  # Holds the STAC catalog, parquet, and PMTiles. Two buckets with different
+  # access models (see seed/entrypoint.sh):
+  #   geo-data — anonymous read. mcp-data-server's DEFAULT DuckDB secret is
+  #              anonymous, so this bucket must be world-readable in-network.
+  #   tiles    — credentialed read/write, for register_hex_tiles output.
+  rustfs:
+    <<: *restart
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-glenadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-glenadmin-change-me}
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_VOLUMES: /data
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [glen]
+
+  # ── One-shot bucket seeder ────────────────────────────────────────────────
+  # Runs under the `bootstrap` profile only: `make seed`. Creates the buckets,
+  # applies the anon-read policy, substitutes ${PUBLIC_ORIGIN} into the STAC
+  # templates, and uploads ./data/bundle. Reads only local files.
+  seed:
+    profiles: ["bootstrap"]
+    build: ./seed
+    image: glen-in-a-box/seed:${TAG:-local}
+    environment:
+      S3_ENDPOINT: http://rustfs:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-glenadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-glenadmin-change-me}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+    volumes:
+      - ./data/bundle:/bundle:ro
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    networks: [glen]
+
+  # ── SQL + STAC ────────────────────────────────────────────────────────────
+  # DuckDB over the local S3. The upstream image already bakes the httpfs,
+  # spatial, and h3 extensions into ~/.duckdb/extensions, which is the usual
+  # reason DuckDB dies in an air gap — it otherwise fetches them on first use.
+  mcp:
+    <<: *restart
+    image: ghcr.io/boettiger-lab/mcp-data-server:${MCP_TAG:-latest}
+    environment:
+      # Default (anonymous) DuckDB S3 secret → the local rustfs.
+      S3_DEFAULT_ENDPOINT: rustfs:9000
+      S3_DEFAULT_URL_STYLE: path
+      S3_DEFAULT_USE_SSL: "false"
+      S3_ENDPOINT_URL: http://rustfs:9000
+
+      # Internal catalog fetch (fast path, works even if nginx is down)...
+      STAC_CATALOG_URL: http://rustfs:9000/geo-data/stac/catalog.json
+      # ...but every href handed to the browser must be public-origin.
+      STAC_PUBLIC_CATALOG_URL: ${PUBLIC_ORIGIN:-http://localhost:8080}/data/geo-data/stac/catalog.json
+
+      # Teach the href→s3:// rewriter about our single public origin, and give
+      # the `tiles` bucket a credentialed scoped secret so hex-tile writes work
+      # (the default secret is anonymous and read-only).
+      S3_SOURCES: >-
+        [{"name":"glen_local",
+          "https_prefix":"${PUBLIC_ORIGIN:-http://localhost:8080}/data/",
+          "s3_prefix":"s3://",
+          "metadata_url_prefix":"http://rustfs:9000/"},
+         {"name":"glen_tiles",
+          "https_prefix":"${PUBLIC_ORIGIN:-http://localhost:8080}/data/tiles/",
+          "s3_prefix":"s3://tiles/",
+          "secret":{"endpoint":"rustfs:9000","scope":"s3://tiles",
+                    "use_ssl":false,"url_style":"path",
+                    "key_id":"${S3_ACCESS_KEY:-glenadmin}",
+                    "secret":"${S3_SECRET_KEY:-glenadmin-change-me}"}}]
+
+      TILE_BUCKET_BASE: s3://tiles
+      MCP_PUBLIC_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost:8080}
+
+      # Laptop-scale defaults. Upstream ships cluster-scale values (48 build
+      # threads) that will thrash a 4-core machine.
+      TILE_BUILD_THREADS: ${TILE_BUILD_THREADS:-4}
+      TILE_THREADS: ${TILE_THREADS:-4}
+      MCP_QUERY_CONCURRENCY: ${MCP_QUERY_CONCURRENCY:-2}
+      DUCKDB_MEMORY_LIMIT: ${DUCKDB_MEMORY_LIMIT:-2GB}
+
+      # Start even if the catalog is briefly unreachable, so a slow rustfs
+      # start does not wedge the stack into a crashloop.
+      STAC_ALLOW_DEGRADED_START: "true"
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz',timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [glen]
+
+  # ── COG raster tiles ──────────────────────────────────────────────────────
+  # GDAL's S3 driver, pointed at rustfs. AWS_HTTPS=NO and
+  # AWS_VIRTUAL_HOSTING=FALSE are both mandatory for a plain-HTTP path-style
+  # local endpoint; either one wrong yields opaque 404s from GDAL.
+  titiler:
+    <<: *restart
+    image: ghcr.io/developmentseed/titiler:latest
+    environment:
+      AWS_S3_ENDPOINT: rustfs:9000
+      AWS_HTTPS: "NO"
+      AWS_VIRTUAL_HOSTING: "FALSE"
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-glenadmin}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-glenadmin-change-me}
+      GDAL_DISABLE_READDIR_ON_OPEN: EMPTY_DIR
+      GDAL_HTTP_MULTIPLEX: "YES"
+      CPL_VSIL_CURL_ALLOWED_EXTENSIONS: ".tif,.TIF,.tiff"
+      # TiTiler is behind nginx at /titiler/ — it must generate links to match.
+      FORWARDED_ALLOW_IPS: "*"
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    networks: [glen]
+
+  # ── Basemap ───────────────────────────────────────────────────────────────
+  # The piece with no cloud fallback: MapLibre's built-in basemaps are all
+  # remote (arcgisonline ×2, cartocdn ×1) and its glyph endpoint is hardcoded
+  # to demotiles.maplibre.org. tileserver-gl renders raster tiles from a local
+  # Protomaps PMTiles extract and also serves the glyph PBFs, so the patched
+  # geo-agent snapshot can point both at /basemap/.
+  basemap:
+    <<: *restart
+    image: maptiler/tileserver-gl:latest
+    command: ["--config", "/config/config.json", "--port", "8080", "--verbose"]
+    volumes:
+      - ./basemap/config:/config:ro
+      - ./basemap/data:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [glen]
+
+networks:
+  glen:
+    driver: bridge
+
+volumes:
+  rustfs-data:

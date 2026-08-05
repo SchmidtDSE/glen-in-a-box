@@ -1,0 +1,21 @@
+{
+    "_comment": [
+        "Deploy-time config, rendered from this template at container start.",
+        "Contains no secrets and needs none: the LLM is a local container with",
+        "no authentication, reached through the same-origin /api/llm/ proxy.",
+        "api_key is a placeholder because the OpenAI client insists on sending",
+        "an Authorization header; llama.cpp ignores it."
+    ],
+
+    "mcp_server_url": "/mcp",
+
+    "llm_model": "${LLM_MODEL_ID}",
+    "llm_models": [
+        {
+            "value": "${LLM_MODEL_ID}",
+            "label": "${LLM_MODEL_LABEL}",
+            "endpoint": "/api/llm",
+            "api_key": "local"
+        }
+    ]
+}
