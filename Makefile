@@ -39,6 +39,7 @@ help:
 	@echo "    make airgap        save images + data to one transferable archive"
 	@echo "    make load          restore that archive on the target machine"
 	@echo "    make up-airgap     start with outbound networking disabled"
+	@echo "    make verify-airgap check it from inside (no port is published)"
 	@echo ""
 	@echo "  Full first run:  cp .env.example .env && make bundle && make up && make seed"
 	@echo ""
@@ -139,6 +140,25 @@ preflight:
 .PHONY: verify
 verify:
 	@bash scripts/verify.sh
+
+# `make up-airgap` publishes no port on purpose (see docker-compose.airgap.yml),
+# so the probes have to run from inside the network. Mounts the repo read-only
+# into a throwaway container on the compose network and targets webapp directly.
+.PHONY: verify-airgap
+verify-airgap:
+	# The probes have to run from inside the network, because `make up-airgap`
+	# publishes no port (see docker-compose.airgap.yml). They also cannot install
+	# anything — that network has no route out, which is the whole point — so this
+	# reuses the titiler image purely because it is already part of the stack and
+	# already ships bash and curl. Nothing titiler-specific is used.
+	@set -a; . ./.env; set +a; \
+	docker run --rm --network glen-in-a-box_glen \
+		--entrypoint bash \
+		-v "$(PWD)":/repo:ro -w /repo \
+		-e VERIFY_TARGET=http://webapp \
+		-e PUBLIC_ORIGIN="$$PUBLIC_ORIGIN" \
+		-e LLM_API_KEY="$$LLM_API_KEY" \
+		ghcr.io/developmentseed/titiler:latest scripts/verify.sh
 
 .PHONY: basemap-verify
 basemap-verify:

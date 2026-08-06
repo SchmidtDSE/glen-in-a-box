@@ -4,6 +4,24 @@ Start with `make verify` — it probes every service through the public origin,
 which is the path the browser takes, and most entries below are things it will
 name directly.
 
+## `make up-airgap` publishes no port
+
+That is deliberate, not a bug. `internal: true` stops published ports from
+working, so there is no way in from the host — which is why the probes have to run
+from inside:
+
+```bash
+make up-airgap
+make verify-airgap
+```
+
+Giving webapp a second, non-internal network to carry the port looks like the fix
+and is not: with one network internal, docker's embedded DNS forwards service
+names to a resolver it cannot reach and answers SERVFAIL, so every proxied route
+502s. Compose accepts a per-network `priority` to break the tie and this Docker
+leaves `GwPriority` at 0 regardless, which is why that appeared to work once and
+then stopped.
+
 ## Nothing responds on port 8080 at all
 
 Check whether nginx is even running:
@@ -21,6 +39,33 @@ served nothing at all. Every `proxy_pass` now goes through a variable plus an
 explicit `resolver`, which defers resolution to request time: a missing service
 costs a 502 on its own route and nothing else. If you see this error after
 editing `nginx.conf.template`, a literal hostname crept back in.
+
+## Services are healthy but cannot reach each other
+
+Symptom: every container reports healthy, the app serves static files, and every
+proxied route 502s or times out. Healthchecks do not catch this because each one
+probes its own process on 127.0.0.1.
+
+Test it directly:
+
+```bash
+docker compose exec -T webapp sh -c 'wget -qO- http://rustfs:9000/health'
+```
+
+If the name resolves but the connection hangs, the compose bridge exists without
+working forwarding. Recreating the network fixes it:
+
+```bash
+docker compose down
+docker network rm glen-in-a-box_glen
+docker compose up -d
+```
+
+Observed on a host that also runs k3s, and it correlates with *switching between
+overlay sets* — `up` then `up-airgap` then `up` again — because each switch makes
+compose tear down and recreate the network. Counting iptables FORWARD rules for
+the bridge is not a useful diagnostic on Docker 29 (a working network shows none;
+it is not using that chain). Try to settle on one overlay set for a session.
 
 ## `make seed` succeeds but the agent says it has no datasets
 

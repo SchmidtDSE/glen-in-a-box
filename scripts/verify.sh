@@ -14,7 +14,14 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
 [ -f .env ] && { set -a; . ./.env; set +a; }
 
-ORIGIN="${PUBLIC_ORIGIN:-http://localhost:8080}"
+# What to probe. Defaults to the public origin, which is what a browser uses.
+# Override it to check the stack from somewhere else — notably from inside the
+# compose network, where `make up-airgap` leaves no published port to hit:
+#     VERIFY_TARGET=http://webapp scripts/verify.sh
+# The catalog-origin check below still compares hrefs against PUBLIC_ORIGIN,
+# because that is what the browser will have to resolve either way.
+ORIGIN="${VERIFY_TARGET:-${PUBLIC_ORIGIN:-http://localhost:8080}}"
+EXPECTED_ORIGIN="${PUBLIC_ORIGIN:-http://localhost:8080}"
 ONLY="${1:-all}"
 
 pass=0
@@ -126,11 +133,11 @@ if [ "$ONLY" = "all" ]; then
     if grep -q '${PUBLIC_ORIGIN}' <<<"$catalog"; then
         printf '  ✗ %-38s unsubstituted placeholder — re-run: make seed\n' "hrefs rendered"
         fail=$((fail + 1))
-    elif grep -q "$ORIGIN" <<<"$catalog"; then
-        printf '  ✓ %-38s hrefs match %s\n' "hrefs rendered" "$ORIGIN"
+    elif grep -q "$EXPECTED_ORIGIN" <<<"$catalog"; then
+        printf '  ✓ %-38s hrefs match %s\n' "hrefs rendered" "$EXPECTED_ORIGIN"
         pass=$((pass + 1))
     else
-        printf '  ✗ %-38s hrefs do NOT contain %s\n' "hrefs rendered" "$ORIGIN"
+        printf '  ✗ %-38s hrefs do NOT contain %s\n' "hrefs rendered" "$EXPECTED_ORIGIN"
         printf '      The bundle was seeded with a different PUBLIC_ORIGIN.\n'
         printf '      Fix PUBLIC_ORIGIN in .env and re-run: make seed\n'
         fail=$((fail + 1))
