@@ -164,6 +164,31 @@ LAYERS = [
 ]
 
 
+# Raster layers. Kept separate from LAYERS because nothing about them is tabular:
+# there is no parquet, no vector tiles and no schema to document — just a COG that
+# TiTiler renders.
+#
+# NLCD is a good fit for this box specifically: it is CONUS-only, and its STAC
+# asset carries `classification:classes` with a colour per class, so geo-agent
+# builds the real NLCD palette and labels the legend itself rather than needing a
+# hand-maintained copy here.
+RASTERS = [
+    {
+        "id": "us-nlcd-2024",
+        "source": "public-land-cover/nlcd-2024/stac-collection.json",
+        "asset": "nlcd-2024-cog",
+        "dest": "cog/nlcd-2024.tif",
+        "title": "NLCD Land Cover 2024 (CONUS)",
+        "description": (
+            "Annual National Land Cover Database, 2024, 30 m, conterminous US. "
+            "A categorical raster: each pixel is a land-cover class, so it is "
+            "rendered by TiTiler rather than queried as a table. Useful alongside "
+            "the census layers — what land cover surrounds a given block group — "
+            "but it holds no attributes to join on."
+        ),
+    },
+]
+
 # Descriptions for the columns that carry meaning. Anything not listed here gets
 # a generic note rather than being dropped: the agent reads this via get_schema,
 # and a column it cannot see is a column it will never query, but a column with
@@ -553,6 +578,58 @@ def write_provenance(layers: list[dict]) -> None:
     log("    stac/MIRROR-PROVENANCE.json (not linked from the catalog)")
 
 
+def write_raster_stac(raster: dict, source: dict, asset: dict) -> None:
+    """Write a collection for a single COG.
+
+    The asset href is an `s3://` path, NOT ${PUBLIC_ORIGIN}, and that is
+    deliberate. The browser hands this href to TiTiler as `?url=`, and TiTiler
+    resolves it server-side using its own S3 configuration. A public-origin URL
+    would send TiTiler back out through nginx — which, behind an authenticating
+    proxy, it cannot get through, so every tile would 401 while the rest of the
+    app worked.
+    """
+    cid = raster["id"]
+    d = OUT / "stac" / cid
+    d.mkdir(parents=True, exist_ok=True)
+
+    a = {
+        "href": f"s3://geo-data/{raster['dest']}",
+        "type": asset.get("type", "image/tiff; application=geotiff; profile=cloud-optimized"),
+        "title": raster["title"],
+        "roles": asset.get("roles") or ["data", "visual"],
+    }
+    # Carried verbatim: the class values, names and colours are what make the map
+    # legible and the legend self-labelling.
+    if asset.get("raster:bands"):
+        a["raster:bands"] = asset["raster:bands"]
+
+    collection = {
+        "type": "Collection",
+        "stac_version": "1.0.0",
+        "stac_extensions": [
+            "https://stac-extensions.github.io/raster/v1.1.0/schema.json",
+        ],
+        "id": cid,
+        "title": raster["title"],
+        "description": raster["description"],
+        "license": source.get("license", "proprietary"),
+        "providers": source.get("providers") or [],
+        "extent": source.get("extent", {
+            "spatial": {"bbox": [[-180.0, 15.0, -64.0, 72.0]]},
+            "temporal": {"interval": [[None, None]]},
+        }),
+        "links": [
+            {"rel": "root", "href": f"{HREF}/stac/catalog.json", "type": "application/json"},
+            {"rel": "parent", "href": f"{HREF}/stac/catalog.json", "type": "application/json"},
+            {"rel": "self", "href": f"{HREF}/stac/{cid}/collection.json", "type": "application/json"},
+        ],
+        "assets": {"cog": a},
+    }
+    (d / "collection.json").write_text(json.dumps(collection, indent=2))
+    n = len(((asset.get("raster:bands") or [{}])[0]).get("classification:classes") or [])
+    log(f"    stac/{cid}/collection.json ({n} land-cover classes carried)")
+
+
 def write_catalog() -> None:
     catalog = {
         "type": "Catalog",
@@ -570,11 +647,11 @@ def write_catalog() -> None:
             *[
                 {
                     "rel": "child",
-                    "href": f"{HREF}/stac/{lyr['id']}/collection.json",
+                    "href": f"{HREF}/stac/{item['id']}/collection.json",
                     "type": "application/json",
-                    "title": lyr["title"],
+                    "title": item["title"],
                 }
-                for lyr in LAYERS
+                for item in (*LAYERS, *RASTERS)
             ],
         ],
     }
@@ -684,6 +761,27 @@ def main() -> int:
                     hex_columns = describe_columns(con, parts[0].as_posix())
 
         write_stac(layer, source, columns, vector_layers, source_url, hex_columns)
+
+    # ── Rasters ──────────────────────────────────────────────────────────────
+    for raster in (RASTERS if not only else [r for r in RASTERS if r["id"] == only]):
+        cid = raster["id"]
+        # These sources sit at a bucket root rather than under SOURCE_BASE, so
+        # the collection path is resolved against the host, not the census bucket.
+        host = SOURCE_BASE.split("://", 1)[0] + "://" + SOURCE_BASE.split("://", 1)[1].split("/", 1)[0]
+        source_url = f"{host}/{raster['source']}"
+        log(f"\n==> {cid}")
+        log(f"    source {source_url}")
+        rsource = fetch_json(source_url)
+        rasset = asset_href(rsource, raster["asset"], source_url)
+
+        if STAC_ONLY:
+            manifest.append({"kind": "object", "src": rasset["href"],
+                             "dest": raster["dest"],
+                             "size": remote_size(rasset["href"]) or 0})
+            log("    stac only — the COG will be mirrored bucket-to-bucket by seed")
+        else:
+            download(rasset["href"], OUT / raster["dest"])
+        write_raster_stac(raster, rsource, rasset)
 
     write_catalog()
     write_provenance(layers)

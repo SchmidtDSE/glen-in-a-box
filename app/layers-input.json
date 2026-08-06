@@ -228,6 +228,20 @@
                     ]
                 }
             ]
+        },
+        {
+            "collection_id": "us-nlcd-2024",
+            "collection_url": "/data/geo-data/stac/us-nlcd-2024/collection.json",
+            "group": "Land cover",
+            "assets": [
+                {
+                    "id": "cog",
+                    "display_name": "Land cover (NLCD 2024)",
+                    "visible": false,
+                    "legend_type": "categorical",
+                    "opacity": 0.75
+                }
+            ]
         }
     ]
 }

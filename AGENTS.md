@@ -114,6 +114,20 @@ below it. Quote anything with spaces or parentheses.
 defaulting to 80, not 8000 — the compose file sets `PORT: 8000` so the route map
 in `nginx.conf.template` stays true. Check, don't assume.
 
+**`app/system-prompt.md` is sent to the model verbatim — comments included.**
+geo-agent does `fetchText('system-prompt.md')` and concatenates it; nothing
+strips HTML comments. So a `<!-- note to maintainers -->` is prompt tokens the
+agent reads, and a note *about* the prompt becomes an instruction *in* it. Keep
+maintainer rationale here in AGENTS.md instead.
+
+**Never tell the model the deployment is offline.** It is true of the machine and
+irrelevant to the model, and saying it does active harm: the agent starts
+treating its own `s3://` paths as unreachable remote resources, second-guesses
+tool calls that work, and asks the user for credentials to a bucket it can
+already read. Every tool it has works normally. Constrain what it should ANSWER
+FROM — the catalog — rather than describing the network. The user-facing welcome
+text in `layers-input.json` is a different audience and can say whatever is true.
+
 **The object store is the local copy, not `data/bundle/`.** `make data` writes
 only the STAC and a hydration manifest; `make seed` streams the 15.6 GB of
 parquet, PMTiles and H3 hex bucket-to-bucket into rustfs. So the artifact that

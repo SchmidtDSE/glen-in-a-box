@@ -50,6 +50,27 @@ A payload without `objects.tar` produces a box that starts, serves a catalog, an
 has nothing behind it — so `airgap-save.sh` refuses to run before `make seed` and
 warns if the archive comes out implausibly small.
 
+## The raster layer
+
+`us-nlcd-2024` is a COG, not a table: Annual NLCD Land Cover 2024, 30 m, CONUS,
+1.6 GB, 203373 x 95653 px with nine overview levels. It is what TiTiler is in this
+stack for — before it, `/titiler/` proxied a service with nothing to serve.
+
+Its STAC asset href is an **`s3://` path, not `${PUBLIC_ORIGIN}`**, and that is
+deliberate. The browser hands the href to TiTiler as `?url=`, and TiTiler resolves
+it server-side with its own S3 configuration. A public-origin URL would send
+TiTiler back out through nginx, which behind an authenticating proxy it cannot get
+through — every tile would 401 while the rest of the app worked fine.
+
+The palette is not configured here. The asset carries
+`raster:bands[0].classification:classes` — 17 classes with a value, name,
+description and `color_hint` each — and geo-agent builds the colormap and labels
+the legend from that. So `layers-input.json` only says `legend_type:
+"categorical"`, and the map shows real NLCD colours with real class names.
+
+Land cover has no attributes to join on, so it pairs with the census layers
+visually rather than in SQL: what surrounds the lowest-income block groups.
+
 ## The H3 hex assets
 
 Every collection has three assets: `parquet` (one row per feature — counts,

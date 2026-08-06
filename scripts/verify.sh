@@ -81,6 +81,7 @@ if [ "$ONLY" = "all" ]; then
     probe "tracts collection"     "$ORIGIN/data/geo-data/stac/us-census-tracts/collection.json" 200
     probe "counties collection"   "$ORIGIN/data/geo-data/stac/us-census-counties/collection.json" 200
     probe "states collection"     "$ORIGIN/data/geo-data/stac/us-census-states/collection.json" 200
+    probe "nlcd collection"       "$ORIGIN/data/geo-data/stac/us-nlcd-2024/collection.json" 200
     # Range-limited on purpose. This is a header check, and PMTiles archives run
     # to hundreds of MB — fetching the whole thing to prove the first bytes
     # exist makes `make verify` slower than everything else combined. It also
@@ -142,6 +143,14 @@ if [ "$ONLY" = "all" ]; then
     # accept text/event-stream"), so a healthy server looks broken.
     probe "MCP health"            "$ORIGIN/mcp-health" 1
     probe "TiTiler"               "$ORIGIN/titiler/healthz" 1
+    # TiTiler reading the COG out of the box's own object store, and rendering it.
+    # /healthz only proves the process is up; this proves GDAL can resolve an
+    # s3:// href against rustfs, which is the part that breaks. A tile this size
+    # is real land cover — a failure here comes back as a few hundred bytes.
+    cog=$(printf 's3%%3A%%2F%%2Fgeo-data%%2Fcog%%2Fnlcd-2024.tif')
+    probe "COG info (titiler reads s3://)" "$ORIGIN/titiler/cog/info?url=$cog" 200
+    probe "COG tile rendered"      "$ORIGIN/titiler/cog/tiles/WebMercatorQuad/6/16/23.png?url=$cog&colormap_name=tab20" \
+          5000 "image/png"
 
     # /healthz proves the process is up; it does not prove the MCP transport
     # works through nginx, which is a separate failure (buffering, upgrade

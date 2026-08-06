@@ -191,6 +191,7 @@ SQL), mirrored from the lab's processed catalog:
 | **Census tracts** (TIGER 2024) | ~85,000 | boundaries and identifiers only |
 | **Counties** (TIGER 2024) | ~3,200 | boundaries and identifiers only |
 | **States** (TIGER 2024) | 56 | boundaries and identifiers only |
+| **NLCD 2024 land cover** | 30 m raster, CONUS | a COG rendered by TiTiler, 17 classes |
 
 **Demographics exist only at block-group level.** That is the layer carrying the
 choropleth; the coarser three are boundary context. It also means a true median
