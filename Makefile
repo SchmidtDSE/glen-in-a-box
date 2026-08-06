@@ -24,7 +24,7 @@ help:
 	@echo "    make images        build and pull all container images"
 	@echo "    make model         download the LLM weights (~5 GB)"
 	@echo "    make basemap       extract the offline basemap (~1-2 GB)"
-	@echo "    make data          build the census bundle (~1-2 GB)"
+	@echo "    make data          mirror the census bundle (~3 GB)"
 	@echo ""
 	@echo "  RUN (no internet needed)"
 	@echo "    make up            start the stack"
@@ -74,27 +74,17 @@ basemap: .env
 
 .PHONY: data
 data: .env
-	@echo "==> building census data bundle"
-	docker build -t glen-in-a-box/data-builder:local ./data
-	mkdir -p data/bundle data/cache
-	# .env is sourced here so CENSUS_API_KEY can live there like every other
-	# setting. Without this it would only be read from the calling shell, and a
-	# key written into .env would be silently ignored — the API then rejects the
-	# request and the build fails on something that looks unrelated.
-	# --ulimit nofile: tippecanoe opens temp files in proportion to core count,
-	# and Docker's default soft limit of 1024 is not enough on a many-core
-	# machine — it dies with "Too many open files" partway through tiling, after
-	# the download and join have already succeeded. The host's own limit is
-	# typically 1M; 65536 is ample and still polite.
+	@echo "==> mirroring the census bundle (~3 GB)"
+	docker build -t glen-in-a-box/data-mirror:local ./data
+	mkdir -p data/bundle
+	# Re-running is cheap: mirror.py skips any file whose size already matches
+	# the source, so an interrupted download resumes at file granularity.
 	@set -a; . ./.env; set +a; \
 	docker run --rm \
-		--ulimit nofile=65536:65536 \
 		-v "$(PWD)/data/bundle:/out" \
-		-v "$(PWD)/data/cache:/cache" \
-		-e CENSUS_API_KEY="$${CENSUS_API_KEY:-}" \
-		-e ONLY_LEVEL="$${ONLY_LEVEL:-}" \
-		-e BUILD_THREADS="$${BUILD_THREADS:-4}" \
-		glen-in-a-box/data-builder:local
+		-e ONLY_LAYER="$${ONLY_LAYER:-}" \
+		$${CENSUS_SOURCE_BASE:+-e CENSUS_SOURCE_BASE="$$CENSUS_SOURCE_BASE"} \
+		glen-in-a-box/data-mirror:local
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUN — offline
@@ -162,5 +152,5 @@ clean:
 	$(COMPOSE) down -v
 	@echo "Containers and the object-store volume are gone."
 	@echo "Downloaded artifacts were NOT deleted (they take hours to rebuild):"
-	@echo "  llm/models  basemap/data  data/bundle  data/cache"
+	@echo "  llm/models  basemap/data  data/bundle"
 	@echo "Remove them by hand if you really mean it."

@@ -38,8 +38,6 @@ the host.
 git clone https://github.com/SchmidtDSE/glen-in-a-box
 cd glen-in-a-box
 cp .env.example .env
-# Then put a free Census API key in .env — `make data` cannot run without one:
-#   https://api.census.gov/data/key_signup.html
 
 make bundle     # ONLINE, once. ~2 hours, ~10 GB downloaded.
 make up
@@ -80,11 +78,12 @@ system has no dependency on any network. `make bundle` is the one online step:
 | `make images` | container images; the webapp build vendors every frontend library | ~2 GB |
 | `make model` | GGUF weights from Hugging Face | ~5 GB |
 | `make basemap` | US extract of the Protomaps planet build, plus glyphs | ~1–2 GB |
-| `make data` | TIGER/Line geometry and ACS tables, built into parquet + PMTiles | ~1–2 GB |
+| `make data` | pre-processed census parquet + PMTiles, mirrored | ~3 GB |
 
-`make data` needs `CENSUS_API_KEY` set in `.env`. The Census API stopped serving
-anonymous data queries and signals it with a redirect to an HTML page rather than
-an error, so the key is checked up front. It is free and instant.
+`make data` mirrors already-processed layers from the `public-census` STAC
+catalog rather than rebuilding them from TIGER shapefiles and ACS API calls. No
+Census API key, no tippecanoe, and re-running is interruption-safe. See
+[docs/data.md](docs/data.md).
 
 `make basemap` pins a dated Protomaps planet build, and `build.protomaps.com`
 retains only a few recent weeks — if the pin has aged out the build stops early
@@ -179,23 +178,29 @@ key means a disabled feature, check the upstream default.
 
 ## What is in the box
 
-Three census layers, each as both vector tiles (for the map) and parquet (for
-SQL), built from TIGER/Line 2024 geometry joined to ACS 2023 five-year
-estimates:
+Four census layers, each as both vector tiles (for the map) and parquet (for
+SQL), mirrored from the lab's processed catalog:
 
-- **States** — 56 features
-- **Counties** — ~3,200 features
-- **Census tracts** — ~85,000 features
+| Layer | Features | Attributes |
+|---|---|---|
+| **Block groups** (ACS 2020–2024) | ~243,000 | population, median household income, per-capita income, poverty count, age groups, vehicle access |
+| **Census tracts** (TIGER 2024) | ~85,000 | boundaries and identifiers only |
+| **Counties** (TIGER 2024) | ~3,200 | boundaries and identifiers only |
+| **States** (TIGER 2024) | 56 | boundaries and identifiers only |
 
-Each carries population, median household income, median home value, poverty
-counts, and derived population density and poverty rate. Full column
-documentation is in the generated STAC collections; the agent reads it at
-runtime via `get_schema`.
+**Demographics exist only at block-group level.** That is the layer carrying the
+choropleth; the coarser three are boundary context. It also means a true median
+income for a county is not available — medians do not aggregate, and a
+population-weighted mean of block-group medians is an approximation that skews
+high. The system prompt makes the agent say so rather than quietly rounding the
+distinction away, and [docs/data.md](docs/data.md) has the query.
 
-Two things the build gets right that are easy to get wrong: the Census API's
-`-666666666` "suppressed" sentinels are converted to NULL rather than left to
-poison every average and choropleth break, and everything joins on GEOID
-because county names are not unique across states.
+Full column documentation ships in each STAC collection, generated from the
+downloaded file itself so it cannot drift from the schema; the agent reads it at
+runtime. Suppressed estimates arrive as proper NULLs rather than `-666666666`
+sentinels, and every join is on GEOID, which is hierarchical — 2 characters for
+state, 5 for county, 11 for tract, 12 for block group — because county names are
+not unique across states.
 
 ---
 
@@ -207,11 +212,12 @@ This is a template. The three files you will actually edit:
 |---|---|
 | [`app/layers-input.json`](app/layers-input.json) | which layers appear, how they are styled, the welcome text |
 | [`app/system-prompt.md`](app/system-prompt.md) | the agent's persona, domain context, and guardrails |
-| [`data/build.py`](data/build.py) | what data goes in the box |
+| [`data/mirror.py`](data/mirror.py) | which layers go in the box |
 
-To swap in your own data, replace `build.py` with something that writes the
-same shape into `data/bundle/`: parquet, PMTiles, and STAC collections whose
-hrefs use the literal `${PUBLIC_ORIGIN}` placeholder. The seed job substitutes
+To add a layer that already exists in a STAC catalog, add an entry to `LAYERS` in
+`mirror.py`. To bring in something else entirely, write whatever you like into
+`data/bundle/` as long as it has the same shape: parquet, PMTiles, and STAC
+collections whose hrefs use the literal `${PUBLIC_ORIGIN}` placeholder. The seed job substitutes
 it at upload time, which is what lets one bundle serve localhost, a LAN
 address, or someone else's reverse proxy without rebuilding.
 
@@ -251,7 +257,8 @@ terms travel with the box you build:
 - **Basemap** — OpenStreetMap data via Protomaps, under
   [ODbL](https://www.openstreetmap.org/copyright). Attribution is required and
   is wired into the map corner; leave it there.
-- **Census data** — US Census Bureau, public domain (CC0).
+- **Census data** — US Census Bureau, public domain (CC0), mirrored from the
+  Boettiger Lab `public-census` catalog.
 - **Model weights** — under the license of whichever model you fetch. Qwen3 is
   Apache 2.0.
 - **geo-agent, MapLibre, and the vendored libraries** — their own licenses,

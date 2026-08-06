@@ -41,19 +41,18 @@ catalog once at startup.
 collections it was pointed at. Check `STAC_CATALOG_URL` resolves from inside the
 container.
 
-## `make data` fails with a JSON decode error
+## `make data` fails or stops partway
 
-The Census API needs an API key and no longer says so in a way that looks like an
-error — it answers `302` with an HTML page. Get one free at
-[api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html)
-and put it in `.env` as `CENSUS_API_KEY`. See [data.md](data.md).
+`make data` mirrors ~3 GB, so the usual cause is a dropped transfer. It is safe
+to just re-run: each file is skipped when its size already matches the source,
+and partial downloads live in `.part` files that are only renamed on completion,
+so an interrupted run never leaves a truncated archive behind.
 
-## `make data` fails with "Too many open files"
+If it reports a missing asset key, the upstream collection changed shape — update
+`LAYERS` in [`data/mirror.py`](../data/mirror.py).
 
-tippecanoe opens temp files in proportion to core count, and Docker's default
-soft limit of 1024 is not enough on a many-core machine. `make data` raises it
-via `--ulimit nofile=65536:65536`; if you are invoking the builder by hand, pass
-the same flag.
+There is no Census API key involved; if you find one referenced anywhere, it is
+left over from the old from-scratch pipeline. See [data.md](data.md).
 
 ## A variable in `.env` seems to be ignored
 
@@ -220,5 +219,5 @@ make up && make seed
 ```
 
 `make clean` deliberately does not delete `llm/models`, `basemap/data`,
-`data/bundle` or `data/cache` — those take hours to rebuild. Remove them by
+`data/bundle` — that is a multi-gigabyte download. Remove it by
 hand if you really mean it.

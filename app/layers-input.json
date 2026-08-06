@@ -14,51 +14,196 @@
         "   Consequence: PUBLIC_ORIGIN must match the URL in the address bar,",
         "   or child collections 404 while this top-level file looks fine.",
         "",
-        "Features off on purpose, not by oversight: geocoder (Nominatim and",
-        "Photon are both remote), voice transcription (needs a speech model",
-        "this box does not ship), and upload (writes to object storage that is",
-        "read-only here). See docs/offline.md.",
-        "",
         "3. `geocoder.enabled: false` must be stated, not implied. Upstream",
         "   computes `geoCfg.enabled !== false`, so an ABSENT geocoder block",
         "   leaves the `geocode` agent tool REGISTERED, and the agent then",
         "   calls nominatim.openstreetmap.org mid-conversation — a live network",
         "   dependency at request time, which is the one thing this box must",
         "   not have. Omitting a key is not the same as disabling a feature;",
-        "   check the upstream default before trusting an absence."
+        "   check the upstream default before trusting an absence.",
+        "",
+        "Features off on purpose, not by oversight: geocoder (Nominatim and",
+        "Photon are both remote), voice transcription (needs a speech model",
+        "this box does not ship), and upload (writes to object storage that is",
+        "read-only here). See docs/offline.md.",
+        "",
+        "FIELD NAMES ARE THE SOURCE'S, NOT OURS. These layers are mirrored from",
+        "the public-census catalog, so tooltips and styles reference upstream",
+        "column names (MHHI, TotPop, NAMELSAD) rather than tidied-up ones. Only",
+        "the block-group layer carries demographics at all; state, county and",
+        "tract are boundaries with TIGER attributes only. Naming a column that",
+        "is not in the TILES renders blank with no error, so check against",
+        "`pmtiles show --metadata` before adding one."
     ],
-
     "catalog": "/data/geo-data/stac/catalog.json",
     "titiler_url": "/titiler",
     "mcp_url": "/mcp",
-
     "auto_approve": true,
     "upload_enabled": false,
     "draw_enabled": true,
-    "charts": { "enabled": true },
-    "geolocate": { "button": false, "agent_tool": false },
-    "geocoder": { "enabled": false, "search_box": false },
-
-    "sidebar": { "enabled": true, "chat_title": "Ask about US census data" },
-
-    "view": { "center": [-98.5, 39.5], "zoom": 4 },
-
+    "charts": {
+        "enabled": true
+    },
+    "geolocate": {
+        "button": false,
+        "agent_tool": false
+    },
+    "geocoder": {
+        "enabled": false,
+        "search_box": false
+    },
+    "sidebar": {
+        "enabled": true,
+        "chat_title": "Ask about US census data"
+    },
+    "view": {
+        "center": [
+            -98.5,
+            39.5
+        ],
+        "zoom": 4
+    },
     "links": {
         "github": "https://github.com/SchmidtDSE/glen-in-a-box",
         "carbon": false
     },
-
     "welcome": {
-        "message": "This is a fully offline copy of the US census explorer — the map, the database, and the language model all run on this machine, with no internet connection. Try asking:",
+        "message": "This is a fully offline copy of the US census explorer — the map, the database, and the language model all run on this machine, with no internet connection. Demographics are ACS 2020–2024 five-year estimates at block-group level. Try asking:",
         "examples": [
-            "Which five states have the highest median household income?",
-            "Show me counties where more than 20% of people live below the poverty line.",
-            "Color the counties by population density and tell me the ten densest.",
-            "How does median income vary across census tracts in Los Angeles County?"
+            "Which block groups in San Francisco have the lowest median household income?",
+            "Show me block groups where more than a third of people are below the poverty line.",
+            "Summarise median household income by county for California.",
+            "Where are the block groups with the most households that have no vehicle?"
         ]
     },
-
     "collections": [
+        {
+            "collection_id": "us-census-blockgroups",
+            "collection_url": "/data/geo-data/stac/us-census-blockgroups/collection.json",
+            "group": "ACS demographics",
+            "assets": [
+                {
+                    "id": "pmtiles",
+                    "display_name": "Block groups — median household income",
+                    "visible": true,
+                    "default_style": {
+                        "fill-color": [
+                            "step",
+                            [
+                                "coalesce",
+                                [
+                                    "get",
+                                    "MHHI"
+                                ],
+                                -1
+                            ],
+                            "#E0E0E0",
+                            0,
+                            "#EFF3FF",
+                            40000,
+                            "#C6DBEF",
+                            60000,
+                            "#9ECAE1",
+                            85000,
+                            "#6BAED6",
+                            115000,
+                            "#3182BD",
+                            175000,
+                            "#08519C"
+                        ],
+                        "fill-opacity": 0.85
+                    },
+                    "tooltip_fields": [
+                        "NAMELSAD",
+                        "TotPop",
+                        "MHHI",
+                        "PCI",
+                        "PovInd"
+                    ],
+                    "legend_type": "categorical",
+                    "legend_classes": [
+                        {
+                            "label": "No data",
+                            "color": "#E0E0E0"
+                        },
+                        {
+                            "label": "under $40k",
+                            "color": "#EFF3FF"
+                        },
+                        {
+                            "label": "$40k – $60k",
+                            "color": "#C6DBEF"
+                        },
+                        {
+                            "label": "$60k – $85k",
+                            "color": "#9ECAE1"
+                        },
+                        {
+                            "label": "$85k – $115k",
+                            "color": "#6BAED6"
+                        },
+                        {
+                            "label": "$115k – $175k",
+                            "color": "#3182BD"
+                        },
+                        {
+                            "label": "$175k and over",
+                            "color": "#08519C"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "collection_id": "us-census-tracts",
+            "collection_url": "/data/geo-data/stac/us-census-tracts/collection.json",
+            "group": "Census geographies",
+            "assets": [
+                {
+                    "id": "pmtiles",
+                    "display_name": "Census tracts",
+                    "visible": false,
+                    "default_style": {
+                        "fill-color": "#000000",
+                        "fill-opacity": 0
+                    },
+                    "outline_style": {
+                        "line-color": "#78909C",
+                        "line-width": 0.4,
+                        "line-opacity": 0.7
+                    },
+                    "tooltip_fields": [
+                        "NAMELSAD",
+                        "GEOID"
+                    ]
+                }
+            ]
+        },
+        {
+            "collection_id": "us-census-counties",
+            "collection_url": "/data/geo-data/stac/us-census-counties/collection.json",
+            "group": "Census geographies",
+            "assets": [
+                {
+                    "id": "pmtiles",
+                    "display_name": "Counties",
+                    "visible": true,
+                    "default_style": {
+                        "fill-color": "#000000",
+                        "fill-opacity": 0
+                    },
+                    "outline_style": {
+                        "line-color": "#546E7A",
+                        "line-width": 0.6,
+                        "line-opacity": 0.8
+                    },
+                    "tooltip_fields": [
+                        "NAMELSAD",
+                        "GEOID"
+                    ]
+                }
+            ]
+        },
         {
             "collection_id": "us-census-states",
             "collection_url": "/data/geo-data/stac/us-census-states/collection.json",
@@ -73,84 +218,13 @@
                         "fill-opacity": 0
                     },
                     "outline_style": {
-                        "line-color": "#37474F",
+                        "line-color": "#263238",
                         "line-width": 1.2
                     },
-                    "tooltip_fields": ["NAME", "STUSPS", "pop_total", "median_income"]
-                }
-            ]
-        },
-        {
-            "collection_id": "us-census-counties",
-            "collection_url": "/data/geo-data/stac/us-census-counties/collection.json",
-            "group": "Census geographies",
-            "assets": [
-                {
-                    "id": "pmtiles",
-                    "display_name": "Counties — median household income",
-                    "visible": true,
-                    "default_style": {
-                        "fill-color": [
-                            "step",
-                            ["coalesce", ["get", "median_income"], -1],
-                            "#E0E0E0",
-                            0, "#FEE5D9",
-                            45000, "#FCAE91",
-                            60000, "#FB6A4A",
-                            80000, "#DE2D26",
-                            105000, "#A50F15"
-                        ],
-                        "fill-opacity": 0.8
-                    },
-                    "outline_style": {
-                        "line-color": "#FFFFFF",
-                        "line-width": 0.3,
-                        "line-opacity": 0.6
-                    },
-                    "tooltip_fields": ["NAME", "STUSPS", "pop_total", "median_income", "pop_density"],
-                    "legend_type": "categorical",
-                    "legend_classes": [
-                        { "label": "No data", "color": "#E0E0E0" },
-                        { "label": "under $45k", "color": "#FEE5D9" },
-                        { "label": "$45k – $60k", "color": "#FCAE91" },
-                        { "label": "$60k – $80k", "color": "#FB6A4A" },
-                        { "label": "$80k – $105k", "color": "#DE2D26" },
-                        { "label": "$105k and over", "color": "#A50F15" }
-                    ]
-                }
-            ]
-        },
-        {
-            "collection_id": "us-census-tracts",
-            "collection_url": "/data/geo-data/stac/us-census-tracts/collection.json",
-            "group": "Census geographies",
-            "assets": [
-                {
-                    "id": "pmtiles",
-                    "display_name": "Census tracts — median household income",
-                    "visible": false,
-                    "default_style": {
-                        "fill-color": [
-                            "step",
-                            ["coalesce", ["get", "median_income"], -1],
-                            "#E0E0E0",
-                            0, "#EFF3FF",
-                            45000, "#BDD7E7",
-                            60000, "#6BAED6",
-                            80000, "#3182BD",
-                            105000, "#08519C"
-                        ],
-                        "fill-opacity": 0.85
-                    },
-                    "tooltip_fields": ["GEOID", "NAMELSAD", "pop_total", "median_income"],
-                    "legend_type": "categorical",
-                    "legend_classes": [
-                        { "label": "No data", "color": "#E0E0E0" },
-                        { "label": "under $45k", "color": "#EFF3FF" },
-                        { "label": "$45k – $60k", "color": "#BDD7E7" },
-                        { "label": "$60k – $80k", "color": "#6BAED6" },
-                        { "label": "$80k – $105k", "color": "#3182BD" },
-                        { "label": "$105k and over", "color": "#08519C" }
+                    "tooltip_fields": [
+                        "NAME",
+                        "STUSPS",
+                        "GEOID"
                     ]
                 }
             ]

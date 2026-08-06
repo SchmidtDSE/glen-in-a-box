@@ -77,15 +77,20 @@ if [ "$ONLY" = "all" ]; then
     echo ""
     echo "  data"
     probe "STAC catalog"          "$ORIGIN/data/geo-data/stac/catalog.json" 200
-    probe "states collection"     "$ORIGIN/data/geo-data/stac/us-census-states/collection.json" 200
-    probe "counties collection"   "$ORIGIN/data/geo-data/stac/us-census-counties/collection.json" 200
+    probe "blockgroups collection" "$ORIGIN/data/geo-data/stac/us-census-blockgroups/collection.json" 200
     probe "tracts collection"     "$ORIGIN/data/geo-data/stac/us-census-tracts/collection.json" 200
+    probe "counties collection"   "$ORIGIN/data/geo-data/stac/us-census-counties/collection.json" 200
+    probe "states collection"     "$ORIGIN/data/geo-data/stac/us-census-states/collection.json" 200
     # Range-limited on purpose. This is a header check, and PMTiles archives run
     # to hundreds of MB — fetching the whole thing to prove the first bytes
     # exist makes `make verify` slower than everything else combined. It also
     # exercises the range-request path that PMTiles itself depends on, which is
     # the more useful thing to know.
     probe "states pmtiles header" "$ORIGIN/data/geo-data/pmtiles/us-census-states.pmtiles" \
+          100 "" -r 0-16383
+    # The layer carrying the demographics, and the only one whose absence makes
+    # the opening map blank rather than merely sparse.
+    probe "blockgroups pmtiles"   "$ORIGIN/data/geo-data/pmtiles/us-census-blockgroups.pmtiles" \
           100 "" -r 0-16383
 
     # The catalog is the one place a PUBLIC_ORIGIN mismatch shows up as data

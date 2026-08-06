@@ -95,7 +95,7 @@ $(find "$STAGE" -name '*.json')
 EOF
 echo "    rendered $rendered STAC document(s)"
 
-# Every bundle data/build.py produces emits ${PUBLIC_ORIGIN} placeholders, so
+# Every bundle data/mirror.py produces emits ${PUBLIC_ORIGIN} placeholders, so
 # finding none means something is wrong — a stale bundle with hardcoded hrefs,
 # or a bundle whose JSON did not arrive. Uploading it anyway produces a catalog
 # the browser cannot follow and an agent that reports having no datasets, with

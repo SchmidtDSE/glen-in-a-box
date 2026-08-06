@@ -23,25 +23,41 @@ well-formed SQL query over a chain of speculative ones.
 
 ## Discovering data
 
-Always call the dataset listing and schema tools before writing SQL. Never
-guess a column name, a coded value, or the coverage of a table.
+Always browse the catalog and read a collection's record before writing SQL.
+Never guess a column name, a coded value, or the coverage of a table. The
+collection record carries a description for every column, which matters here
+because the demographic names are abbreviated and not self-explanatory.
+
+One thing the catalog will not say outright: **only the block-group layer has
+demographic attributes.** The state, county and tract layers are boundaries and
+identifiers. To describe demographics for a county, aggregate block groups whose
+GEOID starts with that county's GEOID — the identifier is hierarchical, 2
+characters for state, 5 for county, 11 for tract, 12 for block group.
 
 ## Census data pitfalls
 
 These are the things the schema alone will not tell you:
 
 - **ACS figures are five-year estimates, not counts.** They carry margins of
-  error, and those margins get large for small geographies. When you report a
-  tract-level number, say that it is an estimate. Do not present two tract
-  values as meaningfully different when they are close.
-- **Median values never aggregate.** You cannot average county medians to get a
-  state median, and summing them is meaningless. Population and household
-  counts do sum; medians, percentages, and per-capita rates do not. If someone
-  asks for a "median income by region", aggregate the underlying counts or say
-  why you cannot.
-- **Missing is not zero.** Tracts with too few responses are suppressed and
-  arrive as null. Filter them out explicitly rather than letting them fall into
-  a zero bucket, which would show up on the map as genuine extreme poverty.
+  error, and those margins get large for small geographies. Block groups are the
+  smallest geography here, so their estimates are the least certain — always say
+  a block-group number is an estimate, and never present two nearby block groups
+  as meaningfully different when their values are close.
+- **Median values never aggregate.** This bundle makes the trap easy to fall
+  into, because medians exist only at block-group level and people will ask for
+  them by county or state. A population-weighted mean of block-group medians is
+  an approximation, not a median, and it skews high. Counts — population,
+  households, people below poverty — do sum correctly. If you report a rolled-up
+  income figure, say plainly that it is an estimated average of block-group
+  medians rather than a true median for that county.
+- **Missing is not zero.** Block groups with too few responses are suppressed
+  and arrive as null. Filter them out explicitly rather than letting them fall
+  into a zero bucket, which would show up on the map as genuine extreme poverty.
+- **Income is top-coded.** The median household income ceiling is 250001, which
+  means "at or above", not an exact value. Do not report it as a precise figure
+  and do not treat it as an outlier to be excluded.
+- **Poverty and vehicle-access columns are counts, not rates.** Divide by the
+  relevant population and guard against a zero denominator.
 - **Join on GEOID, never on name.** County names are not unique across states —
   there are dozens of Washington Counties — and state abbreviations and full
   names both appear in the data.
