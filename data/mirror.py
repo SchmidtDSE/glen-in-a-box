@@ -178,6 +178,25 @@ RASTERS = [
         "source": "public-land-cover/nlcd-2024/stac-collection.json",
         "asset": "nlcd-2024-cog",
         "dest": "cog/nlcd-2024.tif",
+        # This is what makes the H3 indexes worth their disk. A raster and census
+        # polygons tessellate space differently, so "land cover of this county"
+        # is normally a spatial operation. Index both to the same H3 cells and it
+        # collapses to a join on h10 — no geometry math, and an 8B model can
+        # write it. Nothing analogous is needed for population per tract, which
+        # is already tabular along the census hierarchy.
+        "hexes": [
+            {"asset": "nlcd-2024-hex-fractions", "sub": "hex-fractions",
+             "title": "class fractions per H3 cell",
+             "note": "One row per (cell, class) with `frac`, the fraction of the "
+                     "cell covered by that class. Use this for COMPOSITION — the "
+                     "mix of land cover within a tract or county. Fractions for a "
+                     "cell sum to 1."},
+            {"asset": "nlcd-2024-hex", "sub": "hex",
+             "title": "dominant class per H3 cell",
+             "note": "One row per cell with the single dominant class in `nlcd`. "
+                     "Much smaller than the fractions table, so prefer it when the "
+                     "question is 'what cover is this' rather than 'what mix'."},
+        ],
         "title": "NLCD Land Cover 2024 (CONUS)",
         "description": (
             "Annual National Land Cover Database, 2024, 30 m, conterminous US. "
@@ -223,9 +242,18 @@ COLUMN_DOCS = {
     "Under18": "Population under 18 years old.",
     "Senior65": "Population 65 years and over.",
     "NoCar": "Households with no vehicle available.",
+    # Land cover
+    "nlcd": "NLCD land-cover class code. Join to the class names and colours in "
+            "the us-nlcd-2024 collection's raster:bands classification:classes.",
+    "frac": "Fraction of the H3 cell covered by this land-cover class, 0-1. "
+            "Fractions within a cell sum to 1, so a population- or area-weighted "
+            "mean over cells gives a composition.",
     # H3 indexes, present only in the hex assets
     "h0": "H3 cell at resolution 0 — the hive partition key. Filter on it to let "
           "DuckDB skip partitions.",
+    "h5": "H3 cell index at resolution 5 (~250 km² per cell).",
+    "h6": "H3 cell index at resolution 6 (~36 km² per cell).",
+    "h7": "H3 cell index at resolution 7 (~5 km² per cell).",
     "h8": "H3 cell index at resolution 8 (~0.7 km² per cell).",
     "h9": "H3 cell index at resolution 9 (~0.1 km² per cell).",
     "h10": "H3 cell index at resolution 10 (~0.015 km² per cell). Finest here.",
@@ -578,7 +606,8 @@ def write_provenance(layers: list[dict]) -> None:
     log("    stac/MIRROR-PROVENANCE.json (not linked from the catalog)")
 
 
-def write_raster_stac(raster: dict, source: dict, asset: dict) -> None:
+def write_raster_stac(raster: dict, source: dict, asset: dict,
+                      hex_assets: list[dict] | None = None) -> None:
     """Write a collection for a single COG.
 
     The asset href is an `s3://` path, NOT ${PUBLIC_ORIGIN}, and that is
@@ -625,6 +654,20 @@ def write_raster_stac(raster: dict, source: dict, asset: dict) -> None:
         ],
         "assets": {"cog": a},
     }
+
+    for h in (hex_assets or []):
+        collection["assets"][h["key"]] = {
+            "href": f"{HREF}/{h['dest_prefix']}h0=*/data_0.parquet",
+            "type": "application/vnd.apache.parquet",
+            "title": f"{raster['title']} — {h['title']}",
+            "roles": ["data", "index"],
+            "description": h["note"] + (
+                " Joins to the census hex assets on h10 (or a coarser h8/h9), "
+                "which is how you get land cover per census geography without a "
+                "spatial operation."
+            ),
+            "table:columns": h["columns"],
+        }
     (d / "collection.json").write_text(json.dumps(collection, indent=2))
     n = len(((asset.get("raster:bands") or [{}])[0]).get("classification:classes") or [])
     log(f"    stac/{cid}/collection.json ({n} land-cover classes carried)")
@@ -774,14 +817,52 @@ def main() -> int:
         rsource = fetch_json(source_url)
         rasset = asset_href(rsource, raster["asset"], source_url)
 
+        hex_assets = []
+        if MIRROR_HEX:
+            for h in raster.get("hexes", []):
+                ha = asset_href(rsource, h["asset"], source_url)
+                marker = f"/{h['sub']}/"
+                base, _ = ha["href"].split(marker, 1)
+                scheme, rest = base.split("://", 1)
+                host2, bucket_and_path = rest.split("/", 1)
+                bucket = bucket_and_path.split("/", 1)[0]
+                bucket_url = f"{scheme}://{host2}/{bucket}"
+                prefix = bucket_and_path.split("/", 1)[1] + marker
+                objs = list_prefix(bucket_url, prefix.lstrip("/"))
+                if not objs:
+                    raise SystemExit(f"\n{cid}: no objects under {prefix}")
+                total = sum(sz for _, sz in objs)
+                dest_prefix = f"{h['sub']}/{cid}/"
+                log(f"    {h['sub']}: {len(objs)} partition(s), {total / 1e9:.2f} GB")
+                sample = f"{bucket_url}/{urllib.parse.quote(min(objs, key=lambda kv: kv[1])[0])}"
+                if STAC_ONLY:
+                    for key, sz in sorted(objs):
+                        rel = key.split(marker, 1)[1]
+                        manifest.append({"kind": "object", "size": sz,
+                                         "src": f"{bucket_url}/{urllib.parse.quote(key)}",
+                                         "dest": f"{dest_prefix}{rel}"})
+                    cols = describe_columns(con, sample)
+                else:
+                    for key, sz in sorted(objs):
+                        rel = key.split(marker, 1)[1]
+                        download(f"{bucket_url}/{urllib.parse.quote(key)}",
+                                 OUT / dest_prefix / rel)
+                    parts = sorted((OUT / dest_prefix).glob("h0=*/data_0.parquet"),
+                                   key=lambda f: f.stat().st_size)
+                    cols = describe_columns(con, parts[0].as_posix())
+                hex_assets.append({"key": h["sub"].replace("-", "_"),
+                                   "dest_prefix": dest_prefix,
+                                   "title": h["title"], "note": h["note"],
+                                   "columns": cols})
+
         if STAC_ONLY:
             manifest.append({"kind": "object", "src": rasset["href"],
                              "dest": raster["dest"],
                              "size": remote_size(rasset["href"]) or 0})
-            log("    stac only — the COG will be mirrored bucket-to-bucket by seed")
+            log("    stac only — objects will be mirrored bucket-to-bucket by seed")
         else:
             download(rasset["href"], OUT / raster["dest"])
-        write_raster_stac(raster, rsource, rasset)
+        write_raster_stac(raster, rsource, rasset, hex_assets)
 
     write_catalog()
     write_provenance(layers)

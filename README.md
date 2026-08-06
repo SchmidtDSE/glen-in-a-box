@@ -55,7 +55,7 @@ and run `make up-airgap`.
 | | Minimum | Comfortable |
 |---|---|---|
 | RAM | 16 GB | 32 GB |
-| Disk | 40 GB | 60 GB |
+| Disk | 50 GB | 80 GB |
 | CPU | 4 cores | 8+ cores |
 | GPU | not required | NVIDIA, via `make up-gpu` |
 
@@ -80,7 +80,7 @@ system has no dependency on any network. `make bundle` is the one online step:
 | `make images` | container images; the webapp build vendors every frontend library | ~2 GB |
 | `make model` | GGUF weights from Hugging Face | ~5 GB |
 | `make basemap` | US extract of the Protomaps planet build, plus glyphs | ~4 GB |
-| `make data` | STAC + a manifest (~80 KB); `make seed` then streams 15.6 GB of parquet, PMTiles and H3 hex into the box's object store | ~15.6 GB |
+| `make data` | STAC + a manifest (~80 KB); `make seed` then streams 25 GB of parquet, PMTiles, a COG and H3 hex into the box's object store | ~25 GB |
 
 `make data` mirrors already-processed layers from a `public-census` STAC catalog
 rather than rebuilding them from TIGER shapefiles and ACS API calls — no Census
@@ -191,7 +191,7 @@ SQL), mirrored from the lab's processed catalog:
 | **Census tracts** (TIGER 2024) | ~85,000 | boundaries and identifiers only |
 | **Counties** (TIGER 2024) | ~3,200 | boundaries and identifiers only |
 | **States** (TIGER 2024) | 56 | boundaries and identifiers only |
-| **NLCD 2024 land cover** | 30 m raster, CONUS | a COG rendered by TiTiler, 17 classes |
+| **NLCD 2024 land cover** | 30 m raster, CONUS | a COG rendered by TiTiler, 17 classes, plus H3-indexed copies |
 
 **Demographics exist only at block-group level.** That is the layer carrying the
 choropleth; the coarser three are boundary context. It also means a true median
@@ -199,6 +199,14 @@ income for a county is not available — medians do not aggregate, and a
 population-weighted mean of block-group medians is an approximation that skews
 high. The system prompt makes the agent say so rather than quietly rounding the
 distinction away, and [docs/data.md](docs/data.md) has the query.
+
+**Why the H3 indexes are there.** A raster and census polygons tessellate space
+differently, so "what land cover is in this county" would be a spatial operation.
+Both are indexed to the same H3 cells, so it is a join on `h10` — no geometry
+math, and small enough for an 8B model to write. Ask it for Fresno County and you
+get crops 33.5%, shrub 19.6%, grassland 19.1%, evergreen forest 14.5%. Census-only
+questions need none of this: population per tract is already tabular along the
+GEOID hierarchy.
 
 Full column documentation ships in each STAC collection, generated from the
 downloaded file itself so it cannot drift from the schema; the agent reads it at

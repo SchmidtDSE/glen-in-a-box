@@ -100,6 +100,12 @@ if [ "$ONLY" = "all" ]; then
     # the opening map blank rather than merely sparse.
     probe "blockgroups pmtiles"   "$ORIGIN/data/geo-data/pmtiles/us-census-blockgroups.pmtiles" \
           100 "" -r 0-16383
+    # One H3 partition from each side of the cross-tessellation join. Without both
+    # hydrated, "land cover of this county" fails and nothing else does.
+    probe "census hex partition"   "$ORIGIN/data/geo-data/hex/us-census-counties/h0=577164439745200127/data_0.parquet" \
+          100 "" -r 0-16383
+    probe "landcover hex partition" "$ORIGIN/data/geo-data/hex-fractions/us-nlcd-2024/h0=577164439745200127/data_0.parquet" \
+          100 "" -r 0-16383
 
     # The catalog is the one place a PUBLIC_ORIGIN mismatch shows up as data
     # rather than as a failed request, so check it directly.

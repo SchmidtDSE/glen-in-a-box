@@ -23,6 +23,7 @@ There are exactly four collections, and their ids do not change:
 | `us-census-tracts` | tract boundaries, identifiers only |
 | `us-census-counties` | county boundaries, identifiers only |
 | `us-census-states` | state boundaries, identifiers only |
+| `us-nlcd-2024` | 2024 land cover — a raster, plus H3-indexed copies to join against the census layers |
 
 Each has three assets: `parquet` (one row per feature — use it for counts,
 rankings and aggregates), `pmtiles` (what the map renders), and `hex` (the same
@@ -119,6 +120,45 @@ The block-group tiles already carry `TotPop`, `MHHI`, `PCI`, `PovInd`, `Under18`
 `Senior65` and `NoCar`. So a request to colour, shade or filter the map by any of
 those is a styling change on the layer that is already loaded — instant, and it
 cannot fail. Reach for the style and filter tools first.
+
+### Land cover for a census geography — what the H3 indexes are for
+
+A raster and census polygons divide space differently, so "what land cover is in
+this county" would normally need a spatial operation. Both are indexed to the same
+H3 cells, so it is a join on `h10` and no geometry math is involved:
+
+```sql
+WITH cells AS (
+  SELECT DISTINCT h10
+  FROM read_parquet('s3://geo-data/hex/us-census-blockgroups/h0=*/data_0.parquet')
+  WHERE substr(GEOID, 1, 5) = '06019'          -- Fresno County
+)
+SELECT lc.nlcd AS class,
+       round(100.0 * sum(lc.frac) / (SELECT count(*) FROM cells), 1) AS pct
+FROM cells c
+JOIN read_parquet('s3://geo-data/hex-fractions/us-nlcd-2024/h0=*/data_0.parquet') lc
+  ON lc.h10 = c.h10
+GROUP BY lc.nlcd ORDER BY pct DESC
+```
+
+Three things to get right:
+
+- **`SELECT DISTINCT h10` first.** Several block groups can touch the same cell,
+  and joining without deduplicating counts that cell once per block group and
+  inflates every percentage.
+- **`hex-fractions` for a mix, `hex` for a single answer.** The fractions table has
+  one row per (cell, class) with `frac` summing to 1 per cell — that is what gives
+  a composition. The `hex` table has one row per cell with the dominant class, and
+  is far smaller, so prefer it for "what cover is this".
+- **Translate class codes to names** from the `us-nlcd-2024` collection's
+  `raster:bands` `classification:classes`. Reporting bare integers is not an
+  answer.
+
+None of this applies to census-only questions. Population or income for a tract
+is already tabular along the GEOID hierarchy — use the plain parquet, and do not
+involve H3 at all.
+
+### Hex map visualisations
 
 For a genuine density or hex-grid request, use `register_hex_tiles` against the
 **`hex` asset**, not the plain parquet. Every collection has one: the same
