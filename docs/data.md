@@ -2,67 +2,125 @@
 
 ## What gets built
 
-[`data/build.py`](../data/build.py) turns TIGER/Line geometry and ACS estimates
-into three layers, each written in two forms:
+[`data/mirror.py`](../data/mirror.py) copies four already-processed layers out of
+the `public-census` STAC catalog and re-points their hrefs at the local object
+store:
 
 ```
 data/bundle/
-├── parquet/us-census-{states,counties,tracts}.parquet
-├── pmtiles/us-census-{states,counties,tracts}.pmtiles
+├── parquet/us-census-{blockgroups,tracts,counties,states}.parquet
+├── pmtiles/us-census-{blockgroups,tracts,counties,states}.pmtiles
 └── stac/
     ├── catalog.json
-    └── us-census-{states,counties,tracts}/collection.json
+    └── us-census-{blockgroups,tracts,counties,states}/collection.json
 ```
 
-**Both forms are required and they are not redundant.** The map reads tiles;
-the agent's SQL reads parquet. Tiles carry only the handful of attributes
-tippecanoe was told to keep, at simplified geometry — they cannot answer an
-analytical question. Parquet carries full precision and every column but cannot
-be rendered. Dropping either silently removes half the application.
+About 3 GB in total. Nothing is computed and **no Census API key is involved.**
 
-This is also why `tooltip_fields` in `layers-input.json` must be checked
-against the **tile** schema, not the parquet schema. The authoritative list is
-`TILE_FIELDS` in `build.py`. A tooltip naming a parquet-only column renders
-blank, with no error anywhere.
+**Both forms are required and they are not redundant.** The map reads tiles; the
+agent's SQL reads parquet. Tiles carry a subset of attributes at simplified
+geometry — they cannot answer an analytical question. Parquet carries full
+precision and every column but cannot be rendered. Dropping either silently
+removes half the application.
 
-## Census gotchas the pipeline handles
+This is also why `tooltip_fields` in `layers-input.json` must be checked against
+the **tile** schema, not the parquet schema. A tooltip naming a parquet-only
+column renders blank, with no error anywhere. Read the real tile fields with:
 
-Two of these will bite anyone writing a census pipeline from scratch.
+```bash
+pmtiles show --metadata data/bundle/pmtiles/us-census-blockgroups.pmtiles
+```
 
-**Suppressed values are large negative sentinels, not nulls.** The Census API
-returns `-666666666` where an estimate is suppressed. Left alone, a median
-income of minus six hundred million does not merely look wrong — it silently
-wrecks every average, every choropleth break, and every "lowest income"
-ranking, while the data still validates. `build.py` nulls anything below
-`SENTINEL_FLOOR`.
+## Why mirroring instead of building from source
 
-**Names are not join keys.** There are dozens of Washington Counties. Every
-join is on GEOID, built by concatenating the geography key columns in hierarchy
-order: state, then state+county, then state+county+tract.
+This used to be a from-scratch pipeline: TIGER/Line shapefiles plus ACS API
+calls, joined in DuckDB, tiled with tippecanoe, with hand-written STAC on the
+end. It produced artifacts that already existed upstream, and it cost:
 
-Two more the pipeline handles quietly: `poverty_rate` guards its denominator,
-because unpopulated tracts have a zero universe and `0/0` produces a NaN that
-parquet carries happily and every consumer then mishandles differently. And
-`STUSPS` exists only on the state shapefile, so counties and tracts get it by
-joining back on the first two GEOID digits — downstream SQL never has to know.
+* a Census API key — and the API stopped serving anonymous queries, signalling it
+  with a `302` to an HTML page rather than an error, which surfaced as a bare
+  `JSONDecodeError`;
+* a build image with GDAL and a from-source tippecanoe compile;
+* an hour or more of tiling, plus a class of silent join bugs (vintage
+  mismatches, sentinel handling, name-vs-GEOID joins) that had to be defended
+  against individually.
 
-Things the pipeline cannot fix, and which the system prompt therefore warns the
-agent about: ACS figures are five-year estimates with margins of error that get
-wide for small geographies, and medians never aggregate — you cannot average
-county medians into a state median.
+Mirroring removes all of it. The upstream collections are the source of truth for
+what a layer contains, and `mirror.py` only moves bytes and rewrites hrefs.
 
-## Tile design
+The tradeoff is that the bundle now contains what upstream publishes rather than
+exactly what we might choose. Which brings us to the important one:
 
-`TILE_FIELDS` is deliberately short. Every attribute is paid for in every tile
-at every zoom, forever, so tiles get only what styling and hover need and
-everything else stays in parquet.
+## Demographics are block-group only
 
-Zoom ranges are matched to use. Tracts start at z5: 85,000 of them at z0–4 is a
-vast amount of data for a view in which no single tract is a pixel.
+The `census-2024` boundary layers carry TIGER attributes and nothing else — no
+population, no income. **Every demographic column in this bundle comes from the
+ACS 2020–2024 block-group layer**, which is why that is the layer with the
+choropleth and the others are boundary context.
 
-tippecanoe runs with `--no-feature-limit --no-tile-size-limit`. The defaults
-drop features to hit a size budget, which for census geography means whole
-counties silently vanishing at low zoom — worse than a larger tile.
+| Column | Meaning |
+|---|---|
+| `TotPop` | Total population |
+| `MHHI` | Median household income, dollars. NULL where suppressed; top-coded at 250001 |
+| `PCI` | Per-capita income, dollars |
+| `PovInd` | **Count** below the poverty threshold — not a rate |
+| `Under18`, `Senior65` | Age-group populations |
+| `NoCar` | Households with no vehicle available |
+
+Full descriptions ship in each collection's `table:columns`, generated from the
+downloaded file itself so the documentation cannot drift from the schema. The
+agent reads them via the collection-detail tool.
+
+### Rolling up to county or state
+
+People will ask for median income by county, and the honest answer is that this
+bundle cannot give a true one. Medians do not aggregate: you cannot average
+block-group medians into a county median. A population-weighted mean is the
+usual approximation and it skews high, because it weights by population rather
+than by household count and ignores the within-group distribution entirely.
+
+```sql
+-- An ESTIMATE, not a median. Label it as such when reporting.
+SELECT c.NAMELSAD,
+       SUM(b.TotPop) AS pop,
+       SUM(b.MHHI * b.TotPop) / NULLIF(SUM(b.TotPop), 0) AS est_mhhi
+FROM read_parquet('s3://geo-data/parquet/us-census-blockgroups.parquet') b
+JOIN read_parquet('s3://geo-data/parquet/us-census-counties.parquet') c
+  ON c.GEOID = substr(b.GEOID, 1, 5)
+WHERE b.MHHI IS NOT NULL AND b.TotPop > 0
+GROUP BY c.NAMELSAD;
+```
+
+Counts — population, households, people below poverty — *do* sum correctly, so
+a county poverty rate computed from summed counts is sound. The system prompt
+warns the agent about exactly this distinction.
+
+GEOID is hierarchical, which is what makes the join above work: 2 characters for
+state, 5 for county, 11 for tract, 12 for block group. Join on GEOID and never
+on name — there are dozens of Washington Counties.
+
+## Sentinels, handled upstream
+
+The Census API encodes suppressed estimates as `-666666666`. Left alone, a median
+income of minus six hundred million does not merely look wrong — it wrecks every
+average, every choropleth break and every "lowest income" ranking while the data
+still validates.
+
+The mirrored data has none: `MHHI` contains zero values below `-1000000` and uses
+proper NULLs instead (about 19,000 of 242,748 block groups). This is worth
+re-checking if you point `CENSUS_SOURCE_BASE` at a different mirror, because the
+choropleth in `layers-input.json` assumes it — it maps NULL to a "no data" class
+via `coalesce`, and a surviving sentinel would land in the lowest-income bucket
+and paint as genuine extreme poverty.
+
+## What is not mirrored
+
+The upstream collections also publish H3 hex assets (`*-hex`). They are skipped:
+state and county hex are ~270 MB together, but tract and block-group hex are
+~7 GB and ~5 GB, which would quadruple the bundle for something this deployment
+does not read — the `/tiles/` hex-pyramid route is served by mcp-data-server out
+of its own `tiles` bucket via `register_hex_tiles`. Add them to `LAYERS` in
+`mirror.py` if you want them, and update the size figures in the README.
 
 ## The `${PUBLIC_ORIGIN}` placeholder
 
@@ -82,28 +140,34 @@ layers and no obvious error. `make verify` checks for exactly this.
 ## Rebuilding
 
 ```bash
-make data                          # everything
-ONLY_LEVEL=counties make data      # one layer
-TIGER_YEAR=2023 ACS_YEAR=2022 make data
+make data                                  # all four layers
+ONLY_LAYER=us-census-states make data      # one layer
+CENSUS_SOURCE_BASE=https://my-mirror/... make data
 ```
 
-`data/cache/` holds downloaded TIGER archives and ACS responses, so a re-run
-after a failed tile build does not re-download 56 shapefiles. Delete it to force
-a clean fetch.
+Re-running is cheap and interruption-safe: each file is skipped when its size
+already matches the source, and downloads land in `.part` files that are renamed
+only on completion — so a half-copied PMTiles archive never gets mistaken for a
+finished one. Delete a file in `data/bundle/` to force a re-fetch.
 
-Tracts are the slow part: 56 shapefile downloads, 56 API calls, and roughly
-85,000 features through tippecanoe. Budget half an hour or more.
+The block-group layer is the slow part at ~1.6 GB across its two assets.
 
-`CENSUS_API_KEY` is optional. The API serves the ~60 anonymous calls this makes
-without complaint; a key only matters at higher volume.
+No API key is needed. If you are looking for `CENSUS_API_KEY`, it went away with
+the from-scratch pipeline — see "Why mirroring instead of building from source"
+above.
 
 ## Adding your own data
 
-Write anything you like into `data/bundle/`, as long as it produces:
+If the layer already exists in a STAC catalog, add an entry to `LAYERS` in
+[`data/mirror.py`](../data/mirror.py) naming its collection and its two asset
+keys. The asset keys are not uniform upstream (`state-parquet`,
+`blockgroup-parquet`), which is why they are spelled out per layer rather than
+pattern-matched.
+
+Otherwise, write whatever you like into `data/bundle/`, as long as it produces:
 
 1. **Parquet** with a geometry column, at a path under `parquet/`.
-2. **PMTiles** whose internal layer name you know — it is tippecanoe's `-l`
-   argument.
+2. **PMTiles** whose internal layer name you know.
 3. **A STAC collection** whose `pmtiles` asset carries
    `"vector:layers": ["<that layer name>"]`.
 
@@ -111,24 +175,26 @@ Point 3 is the one that fails silently. Without `vector:layers`, the app falls
 back to using the asset key (`"pmtiles"`) as the source-layer name, MapLibre
 finds no such layer in the archive, and **nothing renders, with no error**. If a
 layer is missing from the map and everything else looks right, check this first.
+`mirror.py` refuses to write a collection whose upstream asset lacks it.
 
 Then add the collection to `catalog.json`'s `child` links, add an entry to
 `app/layers-input.json`, and re-run `make seed`.
 
-To verify what a PMTiles archive actually contains:
+### Reading what a PMTiles archive actually contains
+
+Use the `pmtiles` CLI rather than parsing the header by hand — the metadata
+pointer lives at byte 52 and the block is gzip-compressed, so hand-rolled
+readers tend to be quietly wrong. `make basemap` already downloads the binary to
+`basemap/bin/pmtiles`:
 
 ```bash
-docker run --rm -v "$PWD/data/bundle:/d" python:3.12-slim python3 - <<'EOF'
-import struct, json
-with open('/d/pmtiles/us-census-states.pmtiles','rb') as f:
-    head = f.read(16384)
-    off, ln = struct.unpack_from('<Q', head, 24)[0], struct.unpack_from('<Q', head, 32)[0]
-    f.seek(off); meta = json.loads(f.read(ln))
-for layer in meta.get('vector_layers', []):
-    print(layer['id'], sorted(layer.get('fields', {})))
-EOF
+basemap/bin/pmtiles show --metadata data/bundle/pmtiles/us-census-blockgroups.pmtiles \
+  | python3 -c 'import json,sys
+for l in json.load(sys.stdin)["vector_layers"]:
+    print(l["id"], sorted(l.get("fields", {})))'
 ```
 
-The printed `id` must equal the `vector:layers` entry in your STAC asset, and
-the printed fields are the only names valid for `tooltip_fields` and
-`default_filter`.
+The printed `id` must equal the `vector:layers` entry in your STAC asset, and the
+printed fields are the only names valid for `tooltip_fields`, `default_filter`
+and style expressions. Remember that the mirrored layers use upstream column
+names — `MHHI`, not `median_income`.

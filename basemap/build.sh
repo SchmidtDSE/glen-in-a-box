@@ -19,9 +19,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Protomaps publishes a dated build each day. Pin one: "latest" is not
-# reproducible, and a rebuild six months from now should produce the same box.
-PROTOMAPS_BUILD="${PROTOMAPS_BUILD:-20260701}"
+# Protomaps publishes a dated build each day, and pinning one is still the right
+# default — an unpinned basemap makes two boxes built a week apart subtly
+# different. But be clear about the limit: build.protomaps.com retains only a
+# few recent weeks, so a pin is reproducible for a while, NOT forever. When this
+# date ages out the archive 404s and the only fix is to pick a newer one, which
+# is why the URL is checked before the long extract starts rather than after.
+#
+# Override with PROTOMAPS_BUILD=YYYYMMDD, or point PROTOMAPS_URL at your own
+# mirror if you need a genuinely durable pin.
+PROTOMAPS_BUILD="${PROTOMAPS_BUILD:-20260801}"
 PROTOMAPS_URL="${PROTOMAPS_URL:-https://build.protomaps.com/${PROTOMAPS_BUILD}.pmtiles}"
 
 # US including Alaska and Hawaii. Alaska crosses the antimeridian, so the west
@@ -60,6 +67,27 @@ fi
 
 # ── Tile extract ─────────────────────────────────────────────────────────────
 if [ ! -s data/us.pmtiles ]; then
+    # Check before committing to a 10-40 minute range-request crawl. An aged-out
+    # pin otherwise surfaces as an opaque failure partway through the extract.
+    if ! curl -fsI --max-time 60 "$PROTOMAPS_URL" >/dev/null 2>&1; then
+        cat >&2 <<EOF
+
+Cannot reach the Protomaps build:
+  $PROTOMAPS_URL
+
+If that is a 404, the pinned build has aged out — build.protomaps.com keeps
+only the last few weeks of daily builds. Pick a recent date and retry:
+
+    PROTOMAPS_BUILD=\$(date -u +%Y%m%d) make basemap
+
+then update PROTOMAPS_BUILD in basemap/build.sh so the pin matches what you
+actually built. Yesterday's date is a safer bet than today's if the current
+day's build has not finished publishing.
+
+EOF
+        exit 1
+    fi
+
     echo "==> extracting US tiles from ${PROTOMAPS_URL}"
     echo "    bbox=${BBOX} maxzoom=${MAXZOOM}"
     echo "    This is the long step — expect 10-40 minutes and a few GB."
@@ -88,25 +116,34 @@ else
 fi
 
 # ── Styles ───────────────────────────────────────────────────────────────────
-# The Protomaps base themes are ~80 layers each. Hand-writing them here would
+# The Protomaps base themes are ~70 layers each. Hand-writing them here would
 # be unmaintainable, so generate from the published package instead.
-echo "==> generating styles"
+#
+# Package name matters: `protomaps-themes-base` stops at 4.5.0. From v5 the
+# package was renamed to `@protomaps/basemaps`, and the flavor argument changed
+# from a string to a flavor object obtained via namedFlavor(). Asking npm for
+# protomaps-themes-base@5.x installs nothing and fails the build.
+THEMES_PKG="${THEMES_PKG:-@protomaps/basemaps@5.7.2}"
+
+echo "==> generating styles (${THEMES_PKG})"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 (
     cd "$WORK"
     npm init -y >/dev/null 2>&1
-    npm install --no-audit --no-fund --loglevel=error protomaps-themes-base@5.0.0 >/dev/null
+    npm install --no-audit --no-fund --loglevel=error "$THEMES_PKG" >/dev/null
 )
 
+# --input-type=module: the heredoc below is ESM, and Node only guesses that for
+# stdin on recent versions. Stating it keeps this working on any Node 22.
 STYLES_OUT="$PWD/config/styles" \
 WORKDIR="$WORK" \
-node - <<'NODE'
-import { readFileSync, writeFileSync } from 'node:fs';
+node --input-type=module - <<'NODE'
+import { writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(process.env.WORKDIR + '/');
-const themes = require('protomaps-themes-base');
+const themes = require('@protomaps/basemaps');
 
 // Source name is referenced by every generated layer, so it has to match the
 // key in the style's `sources` block exactly.
@@ -124,11 +161,19 @@ for (const flavor of ['light', 'dark', 'white']) {
         // Served by tileserver-gl from data/fonts and data/sprites, reached by
         // the browser through the /basemap/ nginx route.
         glyphs: '{fontstack}/{range}.pbf',
-        sprite: `sprites/v4/${flavor}`,
+        // Relative to options.paths.sprites in config/config.json, which is
+        // already /data/sprites — so this is 'v4/light', NOT 'sprites/v4/light'.
+        // Getting it wrong makes tileserver-gl look for
+        // /data/sprites/sprites/v4/light@2x.png, and a sprite that fails to
+        // load takes the whole render down: every tile request 500s.
+        sprite: `v4/${flavor}`,
         sources: {
             [SOURCE]: { type: 'vector', url: SOURCE_URL, attribution: '© OpenStreetMap contributors' },
         },
-        layers: themes.layers(SOURCE, flavor, { lang: 'en' }),
+        // namedFlavor(), not the bare string: v5 takes a flavor OBJECT. Passing
+        // a string still returns layers, but silently a different (and smaller)
+        // set — a basemap that renders and is quietly missing features.
+        layers: themes.layers(SOURCE, themes.namedFlavor(flavor), { lang: 'en' }),
     };
     writeFileSync(`${process.env.STYLES_OUT}/glen-${flavor}.json`, JSON.stringify(style, null, 2));
     console.log(`    wrote glen-${flavor}.json (${style.layers.length} layers)`);

@@ -5,8 +5,11 @@
 # All large, all reproducible with `make bundle`, none belong in git.
 # `make clean` deliberately leaves them alone — they take hours to rebuild.
 
-# Census bundle and its download cache (~1-2 GB + cache)
+# Mirrored census bundle (~3 GB)
 data/bundle/
+# Not created any more — mirror.py downloads straight to data/bundle/ — but kept
+# ignored so a leftover cache from the old from-scratch pipeline cannot be
+# committed by an `git add -A` in an older checkout.
 data/cache/
 
 # LLM weights (~5 GB)

@@ -172,6 +172,43 @@ const patches = [
         to: "const DRAW_CSS_SRI = '';",
     },
 
+    // ── Geocoder widget ──────────────────────────────────────────────────────
+    // The geocoder is OFF (layers-input.json sets geocoder.enabled false), so
+    // nothing here is reachable — but the Dockerfile's offline gate is a plain
+    // grep over the snapshot and does not know that, and keeping the gate
+    // absolute is worth more than special-casing a file. So these are rewritten
+    // like every other lazy load.
+    //
+    // Deliberately NOT vendored: both geocoder backends (Nominatim, Photon) are
+    // remote services with no offline equivalent, so the widget would be a
+    // search box that always fails. If someone enables it anyway, these paths
+    // 404 against this box rather than quietly reaching the internet — a local
+    // error being the honest outcome for a feature that cannot work here.
+    {
+        file: 'map-geocoder.js',
+        note: 'geocoder js → local path (disabled feature, not vendored)',
+        from: "const GEOCODER_JS = 'https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-geocoder@1.9.4/dist/maplibre-gl-geocoder.min.js';",
+        to: "const GEOCODER_JS = '/vendor/maplibre-gl-geocoder/maplibre-gl-geocoder.min.js';",
+    },
+    {
+        file: 'map-geocoder.js',
+        note: 'geocoder js SRI cleared',
+        from: "const GEOCODER_JS_SRI = 'sha384-RGV5vfoJd7alk8HE+71IyVfu19ciH1FKA15+AuXs6OeBM2npXrmTPFqG23yMiHXi';",
+        to: "const GEOCODER_JS_SRI = '';",
+    },
+    {
+        file: 'map-geocoder.js',
+        note: 'geocoder css → local path',
+        from: "const GEOCODER_CSS = 'https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-geocoder@1.9.4/dist/maplibre-gl-geocoder.css';",
+        to: "const GEOCODER_CSS = '/vendor/maplibre-gl-geocoder/maplibre-gl-geocoder.css';",
+    },
+    {
+        file: 'map-geocoder.js',
+        note: 'geocoder css SRI cleared',
+        from: "const GEOCODER_CSS_SRI = 'sha384-UkDpPApjTpHJHpcJiSNAmbobh30W0/dmt0DoKm4V8CWYRYvQ/Jhd/ijFz0tFdVnH';",
+        to: "const GEOCODER_CSS_SRI = '';",
+    },
+
     // ── Upload target ────────────────────────────────────────────────────────
     // upload_enabled is false in layers-input.json, so this is belt-and-braces:
     // if someone turns the feature on later, it should reach for the local
@@ -275,14 +312,15 @@ const KNOWN_INERT = [
     ['s3-west.nrp-nautilus.io', 'remaining hits are comments and doc strings'],
     ['boettiger-lab.github.io', 'documentation link'],
     ['github.com/boettiger-lab', 'documentation link'],
-    // The geocoder module is dead code here: layers-input.json omits the
-    // `geocoder` block entirely, so map-geocoder.js is never dynamically
-    // imported and geocoder.js never runs. Both of its backends are remote
-    // services with no offline equivalent, so there is nothing to patch to —
-    // the feature is off rather than redirected.
-    ['nominatim.openstreetmap.org', 'geocoder backend; geocoder disabled in config'],
-    ['photon.komoot.io', 'geocoder backend; geocoder disabled in config'],
-    ['maplibre-gl-geocoder', 'geocoder widget, lazily imported only when geocoder is enabled'],
+    // These two are inert ONLY because layers-input.json sets
+    // `geocoder.enabled: false`. Note what does *not* make them inert:
+    // geocoder.js is a static import in main.js, so the module always loads,
+    // and upstream's default is `geoCfg.enabled !== false` — meaning an absent
+    // geocoder block would register the `geocode` agent tool and fetch these
+    // hosts at request time. The config key is load-bearing; if it is ever
+    // removed, these entries stop being true.
+    ['nominatim.openstreetmap.org', 'geocoder backend; inert via geocoder.enabled=false'],
+    ['photon.komoot.io', 'geocoder backend; inert via geocoder.enabled=false'],
 ];
 
 const jsFiles = readdirSync(appDir).filter((f) => f.endsWith('.js'));

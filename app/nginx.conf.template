@@ -17,16 +17,38 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # ── Why every proxy_pass below goes through a variable ───────────────────
+    # A literal hostname in proxy_pass is resolved by nginx AT STARTUP, and an
+    # upstream that does not resolve yet is a fatal config error:
+    #
+    #     nginx: [emerg] host not found in upstream "llm"
+    #
+    # nginx then exits, the container restart-loops, and NOTHING is served — no
+    # map, no data, no basemap — because one service is slow, stopped, or run
+    # under a different profile. That is the opposite of what this box should do:
+    # the LLM is the slowest thing here (minutes of weight loading on a cold CPU
+    # start) and the most likely to be absent, and the map and data are perfectly
+    # usable without it.
+    #
+    # Passing the upstream in a variable defers resolution to request time, so a
+    # missing service costs a 502 on its own route and nothing else. It requires
+    # docker's embedded DNS to be named explicitly, and it disables the implicit
+    # prefix-stripping that proxy_pass normally does — hence the explicit
+    # `rewrite ... break` in each location that needs its path changed.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
     # No Access-Control-Allow-Origin anywhere in this file, by design. Every
     # request the browser makes is same-origin; a permissive CORS header would
     # only widen the surface of a box that may sit on a shared LAN.
 
     # ── Local LLM ────────────────────────────────────────────────────────────
-    # llama.cpp's OpenAI-compatible surface. The trailing /v1/ matters: the app
+    # llama.cpp's OpenAI-compatible surface. The /v1/ prefix matters: the app
     # posts to <endpoint>/chat/completions, so /api/llm/chat/completions must
     # land on /v1/chat/completions.
     location /api/llm/ {
-        proxy_pass http://llm:8080/v1/;
+        set $upstream_llm "http://llm:8080";
+        rewrite ^/api/llm/(.*)$ /v1/$1 break;
+        proxy_pass $upstream_llm;
 
         # Token streaming must not be buffered, or the whole reply lands at
         # once after a long silence and the UI looks hung.
@@ -43,7 +65,8 @@ server {
     # ── MCP: SQL, STAC, and hex-tile pyramids ────────────────────────────────
     # Streamable HTTP transport — SSE downstream, so buffering off again.
     location /mcp {
-        proxy_pass http://mcp:8000/mcp;
+        set $upstream_mcp "http://mcp:8000";
+        proxy_pass $upstream_mcp;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -54,18 +77,34 @@ server {
         proxy_send_timeout 600s;
     }
 
+    # The MCP server's own liveness endpoint, exposed so scripts/verify.sh can
+    # ask a question with a yes-or-no answer. A plain GET /mcp cannot: the
+    # streamable-HTTP transport answers 406 unless the client accepts
+    # text/event-stream, and a request that DOES accept it opens a long-lived
+    # stream — neither is a health probe. /healthz returns {"ok":true,...}.
+    location = /mcp-health {
+        set $upstream_mcp_health "http://mcp:8000";
+        rewrite ^ /healthz break;
+        proxy_pass $upstream_mcp_health;
+        proxy_read_timeout 10s;
+        access_log off;
+    }
+
     # mcp-data-server mounts its own /tiles/{ns}/{name}/{z}/{x}/{y}.pbf route
     # for hex pyramids built by register_hex_tiles, and advertises those URLs
     # to the browser via MCP_PUBLIC_BASE_URL. This is why TiTiler lives at
     # /titiler/ and not at the more obvious /tiles/.
     location /tiles/ {
-        proxy_pass http://mcp:8000/tiles/;
+        set $upstream_tiles "http://mcp:8000";
+        proxy_pass $upstream_tiles;
         proxy_read_timeout 120s;
     }
 
     # ── COG rasters ──────────────────────────────────────────────────────────
     location /titiler/ {
-        proxy_pass http://titiler:8000/;
+        set $upstream_titiler "http://titiler:8000";
+        rewrite ^/titiler/(.*)$ /$1 break;
+        proxy_pass $upstream_titiler;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Prefix /titiler;
@@ -78,7 +117,9 @@ server {
     # pass through untouched and the response must not be buffered into memory
     # — a buffered proxy would pull whole multi-hundred-MB archives per tile.
     location /data/ {
-        proxy_pass http://rustfs:9000/;
+        set $upstream_data "http://rustfs:9000";
+        rewrite ^/data/(.*)$ /$1 break;
+        proxy_pass $upstream_data;
         proxy_set_header Host $host;
         proxy_set_header Range $http_range;
         proxy_set_header If-Range $http_if_range;
@@ -97,7 +138,9 @@ server {
     # CPU work, so cache aggressively: the same few hundred tiles get requested
     # over and over as a user pans.
     location /basemap/ {
-        proxy_pass http://basemap:8080/;
+        set $upstream_basemap "http://basemap:8080";
+        rewrite ^/basemap/(.*)$ /$1 break;
+        proxy_pass $upstream_basemap;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 60s;

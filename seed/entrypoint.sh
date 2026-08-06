@@ -15,6 +15,19 @@ set -eu
 BUNDLE=/bundle
 ALIAS=glen
 
+# The STAC substitution below is the one step here that can fail WITHOUT
+# failing: `for f in $(find ...)` with no find is an empty loop, and `if grep
+# -q` with no grep is just a false branch. Neither trips `set -e`, so the
+# result was a seed that exited 0 after uploading unrendered hrefs. Assert the
+# userland up front instead — see seed/Dockerfile.
+for tool in rc find grep sed mktemp; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "seed: required tool '$tool' is not in this image." >&2
+        echo "      Add it to seed/Dockerfile — do not let it fail silently." >&2
+        exit 1
+    }
+done
+
 if [ ! -d "$BUNDLE" ] || [ -z "$(ls -A "$BUNDLE" 2>/dev/null)" ]; then
     cat >&2 <<EOF
 
@@ -33,8 +46,13 @@ EOF
     exit 1
 fi
 
+# rc stores its alias config under $HOME by default; the image runs as an
+# unprivileged uid whose home may not be writable, so point it somewhere that
+# always is. Nothing here needs to persist beyond this run.
+export RC_CONFIG_DIR="${RC_CONFIG_DIR:-/tmp/rc}"
+
 echo "==> connecting to $S3_ENDPOINT"
-mc alias set "$ALIAS" "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null
+rc alias set "$ALIAS" "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null
 
 # ── Buckets ──────────────────────────────────────────────────────────────────
 # geo-data is anonymously readable and tiles is not, and that asymmetry is
@@ -44,12 +62,14 @@ mc alias set "$ALIAS" "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/nul
 # docker-compose.yml) because register_hex_tiles has to WRITE to it, and an
 # anonymously writable bucket on a LAN-visible box is a bad trade.
 echo "==> creating buckets"
-mc mb --ignore-existing "$ALIAS/geo-data"
-mc mb --ignore-existing "$ALIAS/tiles"
+rc bucket create --ignore-existing "$ALIAS/geo-data"
+rc bucket create --ignore-existing "$ALIAS/tiles"
 
+# rc spells mc's `none` as `private`. Allowed values are private, public,
+# download and upload — an invalid one is a hard error, not a warning.
 echo "==> setting policies"
-mc anonymous set download "$ALIAS/geo-data"
-mc anonymous set none     "$ALIAS/tiles"
+rc bucket anonymous set download "$ALIAS/geo-data"
+rc bucket anonymous set private  "$ALIAS/tiles"
 
 # ── STAC templating ──────────────────────────────────────────────────────────
 # The catalog ships with ${PUBLIC_ORIGIN} placeholders rather than a baked
@@ -58,36 +78,56 @@ mc anonymous set none     "$ALIAS/tiles"
 # hrefs the browser follows and the hrefs the MCP server rewrites to s3:// are
 # generated from one value.
 #
-# sed rather than envsubst: the mc base image has no gettext, and one
-# substitution does not justify another package.
+# sed rather than envsubst: the base image has no gettext, and one substitution
+# does not justify another package.
 echo "==> rendering STAC catalog for PUBLIC_ORIGIN=$PUBLIC_ORIGIN"
 STAGE=$(mktemp -d)
 cp -r "$BUNDLE/." "$STAGE/"
 
 rendered=0
-for f in $(find "$STAGE" -name '*.json'); do
-    if grep -q '${PUBLIC_ORIGIN}' "$f" 2>/dev/null; then
+while IFS= read -r f; do
+    if grep -q '${PUBLIC_ORIGIN}' "$f"; then
         sed -i "s|\${PUBLIC_ORIGIN}|$PUBLIC_ORIGIN|g" "$f"
         rendered=$((rendered + 1))
     fi
-done
+done <<EOF
+$(find "$STAGE" -name '*.json')
+EOF
 echo "    rendered $rendered STAC document(s)"
 
+# Every bundle data/mirror.py produces emits ${PUBLIC_ORIGIN} placeholders, so
+# finding none means something is wrong — a stale bundle with hardcoded hrefs,
+# or a bundle whose JSON did not arrive. Uploading it anyway produces a catalog
+# the browser cannot follow and an agent that reports having no datasets, with
+# no error anywhere. Refuse instead.
 if [ "$rendered" -eq 0 ]; then
-    echo "    warning: no \${PUBLIC_ORIGIN} placeholders found." >&2
-    echo "    If this bundle was built by an older make data, its hrefs may be" >&2
-    echo "    hardcoded to a different origin and layers will fail to load." >&2
+    echo "" >&2
+    echo "seed: no \${PUBLIC_ORIGIN} placeholders found in any bundle JSON." >&2
+    echo "      Nothing was uploaded. Expected hrefs like" >&2
+    echo "        \"\${PUBLIC_ORIGIN}/data/geo-data/pmtiles/...\"" >&2
+    echo "      in $BUNDLE/stac/*/collection.json." >&2
+    echo "      Rebuild the bundle with: make data" >&2
+    exit 1
+fi
+
+# Belt and braces: prove the substitution actually landed before uploading.
+if grep -rq '${PUBLIC_ORIGIN}' "$STAGE"; then
+    echo "seed: placeholders survived substitution — refusing to upload." >&2
+    grep -rl '${PUBLIC_ORIGIN}' "$STAGE" >&2
+    exit 1
 fi
 
 # ── Upload ───────────────────────────────────────────────────────────────────
 echo "==> uploading bundle to s3://geo-data"
-mc mirror --overwrite --remove "$STAGE" "$ALIAS/geo-data"
+rc mirror --overwrite --remove "$STAGE" "$ALIAS/geo-data"
 
 rm -rf "$STAGE"
 
 echo ""
 echo "==> seed complete"
-mc ls --recursive --summarize "$ALIAS/geo-data" | tail -3
+# `rc du` needs a rustfs data-usage route this server does not advertise, so
+# count objects from the listing instead of asking for a summary.
+echo "    $(rc object list --recursive "$ALIAS/geo-data" | wc -l) object(s) in s3://geo-data"
 echo ""
 echo "Catalog should now be readable at:"
 echo "  $PUBLIC_ORIGIN/data/geo-data/stac/catalog.json"
