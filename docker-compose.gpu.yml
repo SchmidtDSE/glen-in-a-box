@@ -51,7 +51,7 @@ services:
       # Weights load from disk to VRAM in well under a minute, so the long CPU
       # start_period is not needed — but keep it generous enough that a cold page
       # cache on a 5 GB file does not trip it.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 5

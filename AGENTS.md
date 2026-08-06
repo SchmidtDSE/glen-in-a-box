@@ -114,6 +114,22 @@ below it. Quote anything with spaces or parentheses.
 defaulting to 80, not 8000 — the compose file sets `PORT: 8000` so the route map
 in `nginx.conf.template` stays true. Check, don't assume.
 
+**Relative URLs are not universally safe.** Browser-facing paths here are
+root-relative on purpose, but `new URL("/mcp")` THROWS — so `mcp_server_url` must
+be absolute and is built from `PUBLIC_ORIGIN` at container start. A relative value
+there produces "MCP server unreachable" while every server-side probe passes.
+Before making a URL relative, check whether anything calls `new URL()` on it.
+
+**A URL in a served file is a run-phase URL**, however documentary it looks. A
+`rel: via` provenance link in a STAC collection got rewritten by the MCP server
+into `s3://public-census`, which the agent then tried to query — and it asked the
+user for AWS credentials. Provenance now lives in a sidecar outside the catalog
+graph.
+
+**`localhost` is not a synonym for 127.0.0.1.** Servers here bind IPv4-only, and
+some images resolve `localhost` to `::1` first, so a healthcheck naming
+`localhost` fails while the service is fine. Use the literal address.
+
 **Headers leak downstream.** rustfs speaks S3 and parses any inbound
 `Authorization` header as SigV4, so a Basic credential from a proxy in front
 makes `/data/` — and only `/data/` — return 400 while everything else works.

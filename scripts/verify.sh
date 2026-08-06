@@ -95,6 +95,30 @@ if [ "$ONLY" = "all" ]; then
 
     # The catalog is the one place a PUBLIC_ORIGIN mismatch shows up as data
     # rather than as a failed request, so check it directly.
+    # Server-side probes cannot catch a config value the BROWSER chokes on. This
+    # one is specific and has bitten: mcp_server_url must be absolute, because
+    # the MCP client does `new URL(url)` with no base and `new URL("/mcp")`
+    # throws — the agent then reports the MCP server unreachable while every
+    # check above passes and the server is entirely healthy.
+    echo ""
+    echo "  browser-side config"
+    cfg=$(curl -s --max-time 20 "$ORIGIN/config.json")
+    mcp_cfg=$(sed -n 's/.*"mcp_server_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$cfg")
+    case "$mcp_cfg" in
+        http://*|https://*)
+            printf '  ✓ %-38s %s\n' "mcp_server_url is absolute" "$mcp_cfg"
+            pass=$((pass + 1)) ;;
+        "")
+            printf '  ✗ %-38s missing from config.json\n' "mcp_server_url"
+            fail=$((fail + 1)) ;;
+        *)
+            printf '  ✗ %-38s %s\n' "mcp_server_url is not absolute" "$mcp_cfg"
+            printf '      new URL("%s") throws in the browser, so the MCP\n' "$mcp_cfg"
+            printf '      transport is never constructed and the agent reports the\n'
+            printf '      server unreachable. It must include a scheme and host.\n'
+            fail=$((fail + 1)) ;;
+    esac
+
     echo ""
     echo "  catalog origin"
     catalog=$(curl -s --max-time 20 "$ORIGIN/data/geo-data/stac/catalog.json")

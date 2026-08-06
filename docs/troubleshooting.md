@@ -54,6 +54,17 @@ If it reports a missing asset key, the upstream collection changed shape — upd
 There is no Census API key involved; if you find one referenced anywhere, it is
 left over from the old from-scratch pipeline. See [data.md](data.md).
 
+## A container reports unhealthy while working perfectly
+
+Check what the healthcheck actually probes. Every healthcheck in this stack uses
+a literal `127.0.0.1` rather than `localhost`, because these servers bind
+`0.0.0.0` (IPv4 only) and in some images `localhost` resolves to `::1` first —
+the probe is then refused while the service answers every real request. It
+depends on the image's `/etc/hosts`, so it can appear after an unrelated rebuild.
+
+The other variant is a probe using a binary the image does not ship: `curl` is
+absent from `maptiler/tileserver-gl` and from `mcp-data-server`.
+
 ## A variable in `.env` seems to be ignored
 
 `.env` is read two ways: docker compose parses it itself, and the shell scripts
@@ -70,6 +81,25 @@ Check what actually survives with:
 ```bash
 bash -c 'set -a; . ./.env; set +a; env | sort'
 ```
+
+## The agent says the MCP server is unreachable, but every probe passes
+
+Check that `config.json` gives an **absolute** `mcp_server_url`:
+
+```bash
+curl -s http://localhost:8080/config.json | grep mcp_server_url
+```
+
+The MCP client does `new URL(url)` with no base, and `new URL("/mcp")` throws.
+The transport is never constructed, the error is swallowed, and the agent reports
+the server unreachable — while the server is perfectly healthy and every
+server-side check passes, because none of them exercises the browser's URL
+construction. Everything else browser-facing in this deployment is deliberately a
+relative path; this one value cannot be, so it is built from `PUBLIC_ORIGIN` at
+container start. `make verify` now asserts it.
+
+If it is absolute and the agent still cannot connect, look for a 401 on `/mcp` in
+the nginx access log — a proxy in front may be rejecting it.
 
 ## Only the /data/ route fails, with 400 InvalidRequest
 

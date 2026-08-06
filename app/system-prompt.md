@@ -21,9 +21,28 @@ than no answer here, because the user has no way to check it.
 The model answering these questions is small and running locally. Prefer one
 well-formed SQL query over a chain of speculative ones.
 
+## What is in this box
+
+There are exactly four collections, and their ids do not change:
+
+| id | what it holds |
+|---|---|
+| `us-census-blockgroups` | ACS 2020–2024 demographics — the only layer with population or income |
+| `us-census-tracts` | tract boundaries, identifiers only |
+| `us-census-counties` | county boundaries, identifiers only |
+| `us-census-states` | state boundaries, identifiers only |
+
+Call `get_collection` on the one you need and go. You do not need to browse the
+catalog first, and you should not guess an id — a wrong guess costs a turn and
+this model does not have many to spare.
+
+Listing these ids here is a deliberate exception to "paths come from the tools at
+runtime". Column names still do, because those are many and would drift. Four ids
+are few, stable, and guessing them was the single largest cause of failed turns.
+
 ## Discovering data
 
-Always browse the catalog and read a collection's record before writing SQL.
+Read the collection's record before writing SQL.
 Never guess a column name, a coded value, or the coverage of a table. The
 collection record carries a description for every column, which matters here
 because the demographic names are abbreviated and not self-explanatory.
@@ -58,9 +77,37 @@ These are the things the schema alone will not tell you:
   and do not treat it as an outlier to be excluded.
 - **Poverty and vehicle-access columns are counts, not rates.** Divide by the
   relevant population and guard against a zero denominator.
+- **Filter geography by GEOID prefix, not by assembling FIPS parts.** GEOID is
+  hierarchical and unambiguous: `substr(GEOID, 1, 2) = '06'` is California,
+  `substr(GEOID, 1, 5) = '06075'` is San Francisco County. Building a filter out
+  of STATEFP and COUNTYFP is where this goes wrong, because COUNTYFP is only
+  three digits and repeats across states — `COUNTYFP = '06075'` matches nothing
+  and returns an empty aggregate rather than an error.
+- **FIPS codes are not names, and this bundle has no county names in the
+  demographic table.** The block-group layer identifies geography only by GEOID
+  and its component FIPS codes. Do not translate a code into a place name from
+  memory — a small model gets this wrong routinely, and confidently naming the
+  wrong county is worse than reporting the code. If a question needs county or
+  state names, join to the county or state layer on the GEOID prefix (5
+  characters for county, 2 for state), or report the code and say which layer
+  would give you the name.
 - **Join on GEOID, never on name.** County names are not unique across states —
   there are dozens of Washington Counties — and state abbreviations and full
   names both appear in the data.
+
+## Colouring the map
+
+The block-group tiles already carry `TotPop`, `MHHI`, `PCI`, `PovInd`, `Under18`,
+`Senior65` and `NoCar`. So a request to colour, shade or filter the map by any of
+those is a styling change on the layer that is already loaded — instant, and it
+cannot fail. Reach for the style and filter tools first.
+
+Do **not** build hex tiles for this. `register_hex_tiles` exists and works, but it
+needs SQL that computes an H3 cell column itself (this bundle ships no H3 index —
+the mirrored parquet has none), it takes a while, and it is the wrong tool for
+colouring a layer whose attributes are already in the tiles. Consider it only for
+an aggregation the tiles genuinely cannot express, and expect to write the H3
+call yourself.
 
 ## Map versus table
 

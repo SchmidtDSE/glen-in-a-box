@@ -25,7 +25,7 @@ HTML=/usr/share/nginx/html
 
 # Client-side config. The explicit variable allowlist is not optional: a bare
 # `envsubst` would also eat any $-sign that happens to appear in a label.
-envsubst '${LLM_MODEL_ID} ${LLM_MODEL_LABEL} ${LLM_API_KEY}' \
+envsubst '${PUBLIC_ORIGIN} ${LLM_MODEL_ID} ${LLM_MODEL_LABEL} ${LLM_API_KEY}' \
     < "$TPL/config.json.template" > "$HTML/config.json"
 
 # Guard for the LLM route, built here rather than in the template because it is
@@ -54,10 +54,11 @@ envsubst '${LLM_AUTH_GUARD}' < "$TPL/nginx.conf.template" > /etc/nginx/conf.d/de
 # related deployments. Two is plenty for a single-user box.
 sed -i 's/^worker_processes.*/worker_processes 2;/' /etc/nginx/nginx.conf
 
-# PUBLIC_ORIGIN is not substituted into anything here — it is consumed by the
-# seed job (which bakes it into STAC hrefs) and by the MCP server (which
-# rewrites those hrefs back to s3://). Surfacing it in the log makes a
-# mismatch, the single most common cause of "layers do not load", obvious.
+# PUBLIC_ORIGIN is used three ways, which is why a mismatch is so confusing:
+# config.json's mcp_server_url is built from it here, the seed job bakes it into
+# STAC hrefs, and the MCP server rewrites those hrefs back to s3://. Surfacing it
+# in the log makes a mismatch — the single most common cause of both "layers do
+# not load" and "MCP server unreachable" — obvious.
 echo "glen-in-a-box webapp"
 echo "  PUBLIC_ORIGIN : $PUBLIC_ORIGIN"
 echo "  LLM model     : $LLM_MODEL_ID ($LLM_MODEL_LABEL)"

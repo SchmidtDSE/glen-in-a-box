@@ -321,10 +321,15 @@ def write_stac(layer: dict, source: dict, columns: list[dict],
             {"rel": "root", "href": f"{HREF}/stac/catalog.json", "type": "application/json"},
             {"rel": "parent", "href": f"{HREF}/stac/catalog.json", "type": "application/json"},
             {"rel": "self", "href": f"{HREF}/stac/{cid}/collection.json", "type": "application/json"},
-            # Provenance: where these bytes came from. Not resolvable offline,
-            # and not meant to be — it records what to re-mirror from.
-            {"rel": "via", "href": source_url, "type": "application/json",
-             "title": "Source collection this was mirrored from"},
+            # No `via` link back to the source. It seems harmless — provenance
+            # that simply will not resolve offline — but the MCP server rewrites
+            # every https href in a collection to an s3:// path for DuckDB, so a
+            # link to s3-west.nrp-nautilus.io became `s3://public-census` in the
+            # agent's context. The agent then queried THAT, failed on
+            # credentials, and asked the user for AWS keys. A URL in a served
+            # file is a run-phase URL no matter how documentary it looks.
+            # Provenance lives in stac/MIRROR-PROVENANCE.json instead, which is
+            # not part of the catalog graph and so never reaches the agent.
         ],
         "table:columns": columns,
         "assets": {
@@ -349,6 +354,23 @@ def write_stac(layer: dict, source: dict, columns: list[dict],
     }
     (d / "collection.json").write_text(json.dumps(collection, indent=2))
     log(f"    stac/{cid}/collection.json ({len(columns)} columns documented)")
+
+
+def write_provenance(layers: list[dict]) -> None:
+    """Record what was mirrored from where, OUTSIDE the catalog graph.
+
+    Deliberately not a STAC link: see write_stac. Nothing reads this at run time;
+    it exists so a human can tell what to re-mirror and from which vintage.
+    """
+    doc = {
+        "_comment": "Provenance for the mirrored bundle. NOT part of the STAC "
+                    "catalog: these URLs are external, and anything reachable "
+                    "from the catalog gets rewritten into the agent's context.",
+        "source_base": SOURCE_BASE,
+        "layers": {l["id"]: f"{SOURCE_BASE}/{l['source']}" for l in layers},
+    }
+    (OUT / "stac" / "MIRROR-PROVENANCE.json").write_text(json.dumps(doc, indent=2))
+    log("    stac/MIRROR-PROVENANCE.json (not linked from the catalog)")
 
 
 def write_catalog() -> None:
@@ -436,6 +458,7 @@ def main() -> int:
         write_stac(layer, source, columns, vector_layers, source_url)
 
     write_catalog()
+    write_provenance(layers)
 
     log("\n==> bundle complete")
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
