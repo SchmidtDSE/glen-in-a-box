@@ -48,12 +48,42 @@ docker save "${IMAGES[@]}" | $COMP > "$OUTDIR/images.tar.$EXT"
 echo "==> saving payload → $OUTDIR/payload.tar.$EXT"
 # basemap/config is included because build.sh generates the style JSONs; they
 # are not in git and the basemap container will not start without them.
+# data/bundle is small now — the STAC plus the hydration manifest — because the
+# data objects live in the object store, saved separately below.
 tar -c \
     data/bundle \
     llm/models \
     basemap/data \
     basemap/config \
     | $COMP > "$OUTDIR/payload.tar.$EXT"
+
+# ── The object store ─────────────────────────────────────────────────────────
+# This is the part that makes the target machine genuinely offline. `make data`
+# only writes the STAC and a manifest of where the objects came from; the objects
+# themselves are streamed bucket-to-bucket into rustfs at seed time. So the
+# authoritative local copy is the rustfs volume, and a payload without it is a
+# box that boots, serves a catalog, and has no data behind it — which used to
+# happen SILENTLY, because tarring data/bundle still succeeded.
+echo "==> saving object store → $OUTDIR/objects.tar.$EXT"
+VOLUME="$(docker volume ls --format '{{.Name}}' | grep -E '_rustfs-data$' | head -1)"
+if [ -z "$VOLUME" ]; then
+    echo "" >&2
+    echo "No rustfs data volume found. Bring the stack up and run 'make seed'" >&2
+    echo "before saving — otherwise this payload carries no data." >&2
+    exit 1
+fi
+echo "    volume: $VOLUME"
+docker run --rm -v "$VOLUME":/v:ro alpine:3 tar -cf - -C /v . \
+    | $COMP > "$OUTDIR/objects.tar.$EXT"
+
+# A payload with a suspiciously small object archive is the failure this whole
+# block exists to prevent, so say the size out loud.
+OBJ_BYTES=$(wc -c < "$OUTDIR/objects.tar.$EXT")
+if [ "$OBJ_BYTES" -lt 100000000 ]; then
+    echo "" >&2
+    echo "WARNING: objects.tar.$EXT is only $((OBJ_BYTES / 1000000)) MB." >&2
+    echo "         Expect several GB. Did 'make seed' finish?" >&2
+fi
 
 echo "==> writing manifest"
 {
@@ -73,7 +103,7 @@ echo "==> writing manifest"
 } > "$OUTDIR/MANIFEST.txt"
 
 echo "==> checksums"
-( cd "$OUTDIR" && sha256sum "images.tar.$EXT" "payload.tar.$EXT" > SHA256SUMS )
+( cd "$OUTDIR" && sha256sum "images.tar.$EXT" "payload.tar.$EXT" "objects.tar.$EXT" > SHA256SUMS )
 
 echo ""
 echo "==> done"

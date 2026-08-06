@@ -114,6 +114,14 @@ below it. Quote anything with spaces or parentheses.
 defaulting to 80, not 8000 — the compose file sets `PORT: 8000` so the route map
 in `nginx.conf.template` stays true. Check, don't assume.
 
+**The object store is the local copy, not `data/bundle/`.** `make data` writes
+only the STAC and a hydration manifest; `make seed` streams the 15.6 GB of
+parquet, PMTiles and H3 hex bucket-to-bucket into rustfs. So the artifact that
+makes the box offline is the rustfs volume, and `make airgap` has to carry it —
+tarring `data/bundle` alone used to succeed and produce a box with an empty
+catalog. Hydration skips objects already present, which is also what lets an
+air-gapped restore seed with no network.
+
 **Relative URLs are not universally safe.** Browser-facing paths here are
 root-relative on purpose, but `new URL("/mcp")` THROWS — so `mcp_server_url` must
 be absolute and is built from `PUBLIC_ORIGIN` at container start. A relative value

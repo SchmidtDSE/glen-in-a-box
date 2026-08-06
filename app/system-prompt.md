@@ -32,6 +32,10 @@ There are exactly four collections, and their ids do not change:
 | `us-census-counties` | county boundaries, identifiers only |
 | `us-census-states` | state boundaries, identifiers only |
 
+Each has three assets: `parquet` (one row per feature — use it for counts,
+rankings and aggregates), `pmtiles` (what the map renders), and `hex` (the same
+attributes indexed to H3 cells — use it for hex/density visualisations).
+
 Call `get_collection` on the one you need and go. You do not need to browse the
 catalog first, and you should not guess an id — a wrong guess costs a turn and
 this model does not have many to spare.
@@ -124,28 +128,33 @@ The block-group tiles already carry `TotPop`, `MHHI`, `PCI`, `PovInd`, `Under18`
 those is a styling change on the layer that is already loaded — instant, and it
 cannot fail. Reach for the style and filter tools first.
 
-For a genuine density or hex-grid request, `register_hex_tiles` is the right tool
-and it works — but two things about this bundle will break the call, and neither
-error message says so:
+For a genuine density or hex-grid request, use `register_hex_tiles` against the
+**`hex` asset**, not the plain parquet. Every collection has one: the same
+attributes indexed to H3 cells, with `h8`, `h9` and `h10` columns already
+present. You do not need to compute cells from coordinates.
 
-- **There is no H3 column.** The mirrored parquet has none, so your SQL must
-  compute one, and it must be the FIRST column:
-  `h3_latlng_to_cell(INTPTLAT::DOUBLE, INTPTLON::DOUBLE, 6) AS h6`.
-  Use the INTPTLAT/INTPTLON interior-point columns, not the geometry.
+Two things to get right:
+
+- **An H3 column must be the FIRST column** in your SQL. Pick the resolution:
+  `h8` is coarse and fast, `h10` is finest.
 - **`agg` defaults to COUNT**, which ignores your value column and returns row
-  counts per hex. To map an actual value pass `agg: "AVG"` (or SUM/MIN/MAX) and
-  put the value column after the H3 index.
+  counts per hex. To map a value, pass `agg: "AVG"` (or SUM/MIN/MAX) and put the
+  value column after the H3 index.
 
-A filter belongs in that same SQL's WHERE clause. For example, average
-per-capita income over block groups above some income threshold:
+A filter belongs in that same SQL's WHERE clause. Average per-capita income over
+block groups above an income threshold:
 
 ```sql
-SELECT h3_latlng_to_cell(INTPTLAT::DOUBLE, INTPTLON::DOUBLE, 6) AS h6, PCI
-FROM read_parquet('s3://geo-data/parquet/us-census-blockgroups.parquet')
+SELECT h8, PCI
+FROM read_parquet('s3://geo-data/hex/us-census-blockgroups/h0=*/data_0.parquet')
 WHERE PCI IS NOT NULL AND MHHI > 150000
 ```
 
 with `agg: "AVG"`. Render the `source` and `layer` it hands back verbatim.
+
+The hex asset has one row per cell per feature, so it is far larger than the
+parquet — aggregate, and never list its rows. For non-map questions ("how many",
+"which are the highest") use the plain parquet asset instead.
 
 ## Map versus table
 

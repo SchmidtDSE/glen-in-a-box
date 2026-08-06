@@ -61,6 +61,21 @@ SOURCE_BASE = os.environ.get(
     "CENSUS_SOURCE_BASE", "https://s3-west.nrp-nautilus.io/public-census"
 )
 
+# The H3 assets are the bulk of the bundle (~12.5 GB of ~15.6). Set MIRROR_HEX=0
+# for a boundaries-and-attributes-only bundle, and expect hex/density
+# visualisations to need an H3 index synthesised per request.
+MIRROR_HEX = os.environ.get("MIRROR_HEX", "1").strip().lower() not in ("0", "false", "no")
+
+# Default mode. The data objects are byte-identical copies — only the STAC needs
+# rewriting — so there is no reason to stage 15 GB on local disk just to upload
+# the same 15 GB into rustfs. In STAC_ONLY mode this writes the catalog plus a
+# manifest of source->destination keys, and the seed job mirrors the objects
+# bucket-to-bucket. One transfer, one stored copy.
+#
+# Set STAC_ONLY=0 to materialise the whole bundle locally instead, which is what
+# you want when building an air-gap payload to carry to a disconnected machine.
+STAC_ONLY = os.environ.get("STAC_ONLY", "1").strip().lower() not in ("0", "false", "no")
+
 # Hrefs are emitted with a ${PUBLIC_ORIGIN} placeholder rather than a hostname.
 # The seed job substitutes it at upload time, which is what lets one bundle
 # serve localhost, a LAN address, or a reverse proxy without a rebuild.
@@ -76,12 +91,16 @@ HREF = "${PUBLIC_ORIGIN}/data/geo-data"
 # "blockgroup-parquet"), which is exactly why they are spelled out here instead
 # of being pattern-matched.
 #
-# The hex assets (`*-hex`) are deliberately NOT mirrored. State and county hex
-# are ~270 MB together, but tract and block-group hex are ~7 GB and ~5 GB, which
-# would quadruple the bundle for a feature the offline box does not use: the
-# hex-pyramid route is served by mcp-data-server from its own `tiles` bucket via
-# register_hex_tiles, not from these files. Add them here if you want them, and
-# expect the bundle size in the README to stop being true.
+# `hex` names the H3-indexed asset. Those are hive-partitioned directories
+# (`hex/h0=<cell>/data_0.parquet`), not single files, so they are listed and
+# copied partition by partition — see mirror_hex_prefix.
+#
+# They are large: ~140 MB state, ~130 MB county, ~7.1 GB tract, ~5.1 GB
+# block group, so mirroring all four takes the bundle from ~3 GB to ~15.6 GB.
+# They are mirrored anyway, because they are the whole point of having a
+# pre-processed catalog: register_hex_tiles wants SQL whose first column is an
+# H3 index, and without these the agent has to synthesise one from interior-point
+# coordinates on every request. Set MIRROR_HEX=0 to skip them and accept that.
 
 LAYERS = [
     {
@@ -89,6 +108,7 @@ LAYERS = [
         "source": "acs-2020-2024/blockgroup/stac-collection.json",
         "parquet": "blockgroup-parquet",
         "pmtiles": "blockgroup-pmtiles",
+        "hex": "blockgroup-hex",
         "title": "ACS Block Groups (2020–2024)",
         "description": (
             "Census block-group boundaries carrying American Community Survey "
@@ -105,6 +125,7 @@ LAYERS = [
         "source": "census-2024/tract/stac-collection.json",
         "parquet": "tract-parquet",
         "pmtiles": "tract-pmtiles",
+        "hex": "tract-hex",
         "title": "US Census Tracts (2024)",
         "description": (
             "Census tract boundaries from TIGER/Line 2024. Boundaries and TIGER "
@@ -118,6 +139,7 @@ LAYERS = [
         "source": "census-2024/county/stac-collection.json",
         "parquet": "county-parquet",
         "pmtiles": "county-pmtiles",
+        "hex": "county-hex",
         "title": "US Counties (2024)",
         "description": (
             "County and county-equivalent boundaries from TIGER/Line 2024. "
@@ -130,6 +152,7 @@ LAYERS = [
         "source": "census-2024/state/stac-collection.json",
         "parquet": "state-parquet",
         "pmtiles": "state-pmtiles",
+        "hex": "state-hex",
         "title": "US States (2024)",
         "description": (
             "State and state-equivalent boundaries from TIGER/Line 2024, "
@@ -175,6 +198,12 @@ COLUMN_DOCS = {
     "Under18": "Population under 18 years old.",
     "Senior65": "Population 65 years and over.",
     "NoCar": "Households with no vehicle available.",
+    # H3 indexes, present only in the hex assets
+    "h0": "H3 cell at resolution 0 — the hive partition key. Filter on it to let "
+          "DuckDB skip partitions.",
+    "h8": "H3 cell index at resolution 8 (~0.7 km² per cell).",
+    "h9": "H3 cell index at resolution 9 (~0.1 km² per cell).",
+    "h10": "H3 cell index at resolution 10 (~0.015 km² per cell). Finest here.",
     # Geometry and area
     "geom": "Polygon boundary, EPSG:4326. NEVER put this column bare in a SELECT "
             "list: the server strips geometry from results, so `SELECT geom` "
@@ -262,6 +291,21 @@ def download(url: str, dest: Path) -> Path:
     except urllib.error.HTTPError as e:
         raise SystemExit(f"\nHTTP {e.code} fetching {url}\n{e.reason}") from e
 
+    # The .part can vanish under us if a second mirror is running against the
+    # same bundle — it renames the file into place while this one is still
+    # writing, and the stat below then dies with a bewildering FileNotFoundError
+    # at 99%. Do not run two mirrors on one bundle; but if it happens, notice
+    # what the other process accomplished rather than crashing.
+    if not tmp.exists():
+        if dest.exists() and (expected is None or dest.stat().st_size == expected):
+            log(f"    have  {dest.name} (completed by another process)")
+            return dest
+        raise SystemExit(
+            f"\n{dest.name}: the partial download disappeared mid-transfer.\n"
+            f"  Another `make data` is probably running against {OUT} — run one "
+            f"at a time."
+        )
+
     if expected is not None and tmp.stat().st_size != expected:
         tmp.unlink(missing_ok=True)
         raise SystemExit(
@@ -273,11 +317,92 @@ def download(url: str, dest: Path) -> Path:
     return dest
 
 
+def list_prefix(bucket_url: str, prefix: str) -> list[tuple[str, int]]:
+    """List (key, size) under a prefix via S3 ListObjectsV2, following pages."""
+    import xml.etree.ElementTree as ET
+    ns = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+    out: list[tuple[str, int]] = []
+    token = None
+    while True:
+        url = f"{bucket_url}?list-type=2&prefix={urllib.parse.quote(prefix)}&max-keys=1000"
+        if token:
+            url += "&continuation-token=" + urllib.parse.quote(token)
+        with urllib.request.urlopen(url, timeout=120) as r:
+            root = ET.fromstring(r.read())
+        for c in root.findall(f"{ns}Contents"):
+            key = c.findtext(f"{ns}Key")
+            size = int(c.findtext(f"{ns}Size") or 0)
+            if key and size > 0:
+                out.append((key, size))
+        if (root.findtext(f"{ns}IsTruncated") or "false").lower() != "true":
+            break
+        token = root.findtext(f"{ns}NextContinuationToken")
+        if not token:
+            break
+    return out
+
+
+def hex_sample_url(hex_href: str) -> str:
+    """URL of the smallest partition under a hex prefix, for a cheap schema read.
+
+    The partitions share a schema and the largest runs past a gigabyte, so pick
+    the smallest rather than whatever the glob happens to match first.
+    """
+    base, bucket_url, prefix = _split_hex_href(hex_href)
+    objs = list_prefix(bucket_url, prefix)
+    if not objs:
+        raise SystemExit(f"\nno objects under {bucket_url}/{prefix}")
+    key = min(objs, key=lambda kv: kv[1])[0]
+    return f"{bucket_url}/{urllib.parse.quote(key)}"
+
+
+def _split_hex_href(hex_href: str) -> tuple[str, str, str]:
+    """Split a hex glob href into (base, bucket_url, prefix)."""
+    marker = "/hex/"
+    if marker not in hex_href:
+        raise SystemExit(f"\nhex href has no /hex/ segment: {hex_href}")
+    base, _ = hex_href.split(marker, 1)
+    scheme, rest = base.split("://", 1)
+    host, bucket_and_path = rest.split("/", 1)
+    bucket = bucket_and_path.split("/", 1)[0]
+    bucket_url = f"{scheme}://{host}/{bucket}"
+    prefix = (bucket_and_path.split("/", 1)[1] + marker) if "/" in bucket_and_path else marker
+    return base, bucket_url, prefix.lstrip("/")
+
+
+def mirror_hex_prefix(cid: str, hex_href: str) -> int:
+    """Copy an H3 partition directory, preserving its hive layout.
+
+    The upstream href is a glob (`.../hex/h0=*/data_0.parquet`), which names a
+    directory of partitions rather than one object, so it cannot simply be
+    downloaded. Strip back to the prefix, list it, and mirror each partition to
+    the same relative path locally so a `read_parquet` glob still resolves and
+    DuckDB can still prune by h0.
+    """
+    marker = "/hex/"
+    _, bucket_url, prefix = _split_hex_href(hex_href)
+
+    objs = list_prefix(bucket_url, prefix)
+    if not objs:
+        raise SystemExit(
+            f"\n{cid}: no objects under {bucket_url}/{prefix}\n"
+            f"  The hex asset href was {hex_href}"
+        )
+    total = sum(s for _, s in objs)
+    log(f"    hex: {len(objs)} partition(s), {total / 1e9:.2f} GB")
+    for key, _ in sorted(objs):
+        # Keep everything from h0=... onward, so the local layout matches.
+        rel = key.split(marker, 1)[1]
+        download(f"{bucket_url}/{urllib.parse.quote(key)}",
+                 OUT / "hex" / cid / rel)
+    return total
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # STAC
 # ─────────────────────────────────────────────────────────────────────────────
 
-def describe_columns(con: duckdb.DuckDBPyConnection, parquet: Path) -> list[dict]:
+def describe_columns(con: duckdb.DuckDBPyConnection, parquet: str) -> list[dict]:
     """Build table:columns from the file itself, not from an assumption.
 
     Read from the local copy after download, so what the agent is told matches
@@ -285,7 +410,7 @@ def describe_columns(con: duckdb.DuckDBPyConnection, parquet: Path) -> list[dict
     schema and its documentation drift apart.
     """
     rows = con.execute(
-        f"DESCRIBE SELECT * FROM read_parquet('{parquet.as_posix()}')"
+        f"DESCRIBE SELECT * FROM read_parquet('{parquet}')"
     ).fetchall()
     return [
         {
@@ -298,7 +423,8 @@ def describe_columns(con: duckdb.DuckDBPyConnection, parquet: Path) -> list[dict
 
 
 def write_stac(layer: dict, source: dict, columns: list[dict],
-               vector_layers: list[str], source_url: str) -> None:
+               vector_layers: list[str], source_url: str,
+               hex_columns: list[dict] | None = None) -> None:
     cid = layer["id"]
     d = OUT / "stac" / cid
     d.mkdir(parents=True, exist_ok=True)
@@ -358,8 +484,56 @@ def write_stac(layer: dict, source: dict, columns: list[dict],
             },
         },
     }
+
+    # The H3-indexed copy, when mirrored. The href is a glob because this is a
+    # hive-partitioned directory, and DuckDB reads it as one table — the h0
+    # partition key lets it prune. This is what register_hex_tiles wants: its SQL
+    # needs an H3 index as the first column, and here one already exists.
+    if hex_columns is not None:
+        collection["assets"]["hex"] = {
+            "href": f"{HREF}/hex/{cid}/h0=*/data_0.parquet",
+            "type": "application/vnd.apache.parquet",
+            "title": f"{layer['title']} indexed to H3 cells",
+            "roles": ["data", "index"],
+            "description": (
+                "Same attributes as the parquet asset, exploded to H3 cells: one "
+                "row per cell per feature. h8/h9/h10 are H3 indexes at those "
+                "resolutions and h0 is the partition key. Use this for hex, "
+                "density and heatmap visualisations — pass an H3 column as the "
+                "FIRST column to register_hex_tiles. Row counts are much larger "
+                "than the parquet asset, so aggregate rather than listing rows."
+            ),
+            "table:columns": hex_columns,
+        }
     (d / "collection.json").write_text(json.dumps(collection, indent=2))
     log(f"    stac/{cid}/collection.json ({len(columns)} columns documented)")
+
+
+def write_manifest(entries: list[dict]) -> None:
+    """Write the hydration plan the seed job executes.
+
+    TSV, not JSON, because seed/entrypoint.sh is POSIX shell with no JSON parser
+    — the same reasoning as app/vendor/manifest.tsv. One line per object:
+
+        dest<TAB>size<TAB>src
+
+    Source URLs live ONLY here. They are external, and this file is deliberately
+    not part of the STAC catalog: anything reachable from the catalog gets
+    rewritten into the agent's context, and an agent that can see an upstream
+    bucket will try to query it.
+    """
+    lines = [
+        "# Hydration plan for seed/entrypoint.sh — see data/mirror.py.",
+        "# dest<TAB>size<TAB>src   (source objects are copied bucket-to-bucket)",
+        f"# source_base: {SOURCE_BASE}",
+        f"# total: {sum(e.get('size') or 0 for e in entries) / 1e9:.2f} GB "
+        f"across {len(entries)} objects",
+    ]
+    for e in entries:
+        lines.append(f"{e['dest']}\t{e.get('size') or 0}\t{e['src']}")
+    (OUT / "HYDRATE-MANIFEST.tsv").write_text("\n".join(lines) + "\n")
+    total = sum(e.get("size") or 0 for e in entries) / 1e9
+    log(f"    HYDRATE-MANIFEST.tsv ({len(entries)} objects, {total:.2f} GB to mirror)")
 
 
 def write_provenance(layers: list[dict]) -> None:
@@ -435,8 +609,12 @@ def main() -> int:
             )
 
     con = duckdb.connect()
+    if STAC_ONLY:
+        con.execute("INSTALL httpfs; LOAD httpfs;")
+    manifest: list[dict] = []
 
     log(f"==> mirroring from {SOURCE_BASE}")
+    log(f"    mode: {'STAC only (seed hydrates bucket-to-bucket)' if STAC_ONLY else 'full local bundle'}")
 
     for layer in layers:
         cid = layer["id"]
@@ -457,14 +635,60 @@ def main() -> int:
                 f"    pmtiles show --metadata <url>\n  and hardcode it here."
             )
 
-        pq = download(pq_asset["href"], OUT / "parquet" / f"{cid}.parquet")
-        download(mv_asset["href"], OUT / "pmtiles" / f"{cid}.pmtiles")
+        hex_asset = None
+        if MIRROR_HEX and layer.get("hex"):
+            hex_asset = asset_href(source, layer["hex"], source_url)
 
-        columns = describe_columns(con, pq)
-        write_stac(layer, source, columns, vector_layers, source_url)
+        if STAC_ONLY:
+            # Schemas come from the source over HTTP. DuckDB reads only the
+            # parquet footer for a DESCRIBE, so this is a few KB per file, not
+            # a download.
+            columns = describe_columns(con, pq_asset["href"])
+            for asset, dest in ((pq_asset, f"parquet/{cid}.parquet"),
+                                (mv_asset, f"pmtiles/{cid}.pmtiles")):
+                manifest.append({"kind": "object", "src": asset["href"],
+                                 "dest": dest,
+                                 "size": remote_size(asset["href"]) or 0})
+            hex_columns = None
+            if hex_asset:
+                # Expand the partition directory into explicit objects. The seed
+                # job then needs no source credentials and no listing logic of
+                # its own — it just streams each URL to a key.
+                _, bucket_url, prefix = _split_hex_href(hex_asset["href"])
+                objs = list_prefix(bucket_url, prefix)
+                if not objs:
+                    raise SystemExit(f"\n{cid}: no hex objects under {prefix}")
+                total = sum(sz for _, sz in objs)
+                log(f"    hex: {len(objs)} partition(s), {total / 1e9:.2f} GB "
+                    f"(mirrored by seed, not downloaded here)")
+                for key, sz in sorted(objs):
+                    rel = key.split("/hex/", 1)[1]
+                    manifest.append({
+                        "kind": "object", "size": sz,
+                        "src": f"{bucket_url}/{urllib.parse.quote(key)}",
+                        "dest": f"hex/{cid}/{rel}",
+                    })
+                hex_columns = describe_columns(
+                    con, f"{bucket_url}/{urllib.parse.quote(min(objs, key=lambda kv: kv[1])[0])}")
+            log("    stac only — objects will be mirrored bucket-to-bucket by seed")
+        else:
+            pq = download(pq_asset["href"], OUT / "parquet" / f"{cid}.parquet")
+            download(mv_asset["href"], OUT / "pmtiles" / f"{cid}.pmtiles")
+            columns = describe_columns(con, pq.as_posix())
+            hex_columns = None
+            if hex_asset:
+                mirror_hex_prefix(cid, hex_asset["href"])
+                parts = sorted((OUT / "hex" / cid).glob("h0=*/data_0.parquet"),
+                               key=lambda f: f.stat().st_size)
+                if parts:
+                    hex_columns = describe_columns(con, parts[0].as_posix())
+
+        write_stac(layer, source, columns, vector_layers, source_url, hex_columns)
 
     write_catalog()
     write_provenance(layers)
+    if STAC_ONLY:
+        write_manifest(manifest)
 
     log("\n==> bundle complete")
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())

@@ -2,34 +2,70 @@
 
 ## What gets built
 
-[`data/mirror.py`](../data/mirror.py) copies four already-processed layers out of
-the `public-census` STAC catalog and re-points their hrefs at the local object
-store:
+Two phases, and the split is the point.
+
+**`make data` (online)** reads the upstream STAC and writes only what has to be
+transformed — about 80 KB:
 
 ```
 data/bundle/
-├── parquet/us-census-{blockgroups,tracts,counties,states}.parquet
-├── pmtiles/us-census-{blockgroups,tracts,counties,states}.pmtiles
-└── stac/
-    ├── catalog.json
-    └── us-census-{blockgroups,tracts,counties,states}/collection.json
+├── stac/catalog.json, stac/<id>/collection.json   hrefs re-pointed at this box
+├── stac/MIRROR-PROVENANCE.json                    what came from where
+└── HYDRATE-MANIFEST.tsv                           dest<TAB>size<TAB>src, 71 objects
 ```
 
-About 3 GB in total. Nothing is computed and **no Census API key is involved.**
+**`make seed` (online once)** executes that manifest, streaming each object
+straight from the source bucket into the box's own rustfs — 15.6 GB, stored once:
 
-**Both forms are required and they are not redundant.** The map reads tiles; the
-agent's SQL reads parquet. Tiles carry a subset of attributes at simplified
-geometry — they cannot answer an analytical question. Parquet carries full
-precision and every column but cannot be rendered. Dropping either silently
-removes half the application.
-
-This is also why `tooltip_fields` in `layers-input.json` must be checked against
-the **tile** schema, not the parquet schema. A tooltip naming a parquet-only
-column renders blank, with no error anywhere. Read the real tile fields with:
-
-```bash
-pmtiles show --metadata data/bundle/pmtiles/us-census-blockgroups.pmtiles
 ```
+s3://geo-data/
+├── parquet/us-census-{blockgroups,tracts,counties,states}.parquet   1.2 GB
+├── pmtiles/us-census-{...}.pmtiles                                  1.8 GB
+├── hex/us-census-{...}/h0=*/data_0.parquet                          12  GB
+└── stac/...
+```
+
+After that the box needs no network. The objects are in its object store, and
+`make up-airgap` proves it — every backend loses its route out and the hex flow
+still runs.
+
+**Why not stage it on disk first.** The parquet, pmtiles and hex objects are
+byte-identical copies; only the STAC needs rewriting. Downloading 15.6 GB to
+`data/bundle/` and then uploading the same 15.6 GB into rustfs stored it twice
+and moved it twice for no gain. Hydration skips any object already present with
+the right size, which is what makes `make seed` cheap to re-run — and what makes
+an air-gapped restore work without touching the network at all.
+
+Set `STAC_ONLY=0` to materialise everything on disk instead. You want that only
+if you specifically need `data/bundle/` to be the portable artifact; the normal
+air-gap path carries the object store, see below.
+
+**Carrying it to a disconnected machine.** `make airgap` saves three archives:
+images, the payload (STAC, model weights, basemap), and `objects.tar` — a dump of
+the rustfs volume. That third one is the data. `make load` restores the volume,
+and `make seed` on the target then finds all 71 objects already in place, fetches
+nothing, and only re-renders the STAC for the local `PUBLIC_ORIGIN`.
+
+A payload without `objects.tar` produces a box that starts, serves a catalog, and
+has nothing behind it — so `airgap-save.sh` refuses to run before `make seed` and
+warns if the archive comes out implausibly small.
+
+## The H3 hex assets
+
+Every collection has three assets: `parquet` (one row per feature — counts,
+rankings, aggregates), `pmtiles` (what the map renders), and `hex` (the same
+attributes indexed to H3 cells).
+
+The hex tables are the reason to mirror a pre-processed catalog rather than build
+one. They carry `h8`, `h9` and `h10` index columns with `h0` as the hive
+partition key, so `register_hex_tiles` — which needs an H3 index as its SQL's
+first column — has one ready. Without them the agent has to synthesise cells from
+interior-point coordinates on every request, which an 8B model gets wrong.
+
+They are also most of the bundle: ~140 MB state, ~124 MB county, 6.7 GB tract,
+4.8 GB block group. The block-group table is 646 million rows across 13.2 million
+distinct h8 cells, so aggregate against it and never list rows. `MIRROR_HEX=0`
+skips them.
 
 ## Why mirroring instead of building from source
 

@@ -55,7 +55,7 @@ and run `make up-airgap`.
 | | Minimum | Comfortable |
 |---|---|---|
 | RAM | 16 GB | 32 GB |
-| Disk | 25 GB | 40 GB |
+| Disk | 40 GB | 60 GB |
 | CPU | 4 cores | 8+ cores |
 | GPU | not required | NVIDIA, via `make up-gpu` |
 
@@ -80,12 +80,14 @@ system has no dependency on any network. `make bundle` is the one online step:
 | `make images` | container images; the webapp build vendors every frontend library | ~2 GB |
 | `make model` | GGUF weights from Hugging Face | ~5 GB |
 | `make basemap` | US extract of the Protomaps planet build, plus glyphs | ~4 GB |
-| `make data` | pre-processed census parquet + PMTiles, mirrored | ~3 GB |
+| `make data` | STAC + a manifest (~80 KB); `make seed` then streams 15.6 GB of parquet, PMTiles and H3 hex into the box's object store | ~15.6 GB |
 
-`make data` mirrors already-processed layers from the `public-census` STAC
-catalog rather than rebuilding them from TIGER shapefiles and ACS API calls. No
-Census API key, no tippecanoe, and re-running is interruption-safe. See
-[docs/data.md](docs/data.md).
+`make data` mirrors already-processed layers from a `public-census` STAC catalog
+rather than rebuilding them from TIGER shapefiles and ACS API calls — no Census
+API key, no tippecanoe. It writes only the STAC and a manifest; `make seed`
+streams the objects bucket-to-bucket into the box's own store, so they are stored
+once rather than staged on disk and uploaded again. Point `CENSUS_SOURCE_BASE` at
+whichever mirror is closest to you. See [docs/data.md](docs/data.md).
 
 `make basemap` pins a dated Protomaps planet build, and `build.protomaps.com`
 retains only a few recent weeks — if the pin has aged out the build stops early
