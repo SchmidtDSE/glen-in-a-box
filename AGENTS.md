@@ -148,6 +148,20 @@ into `s3://public-census`, which the agent then tried to query — and it asked 
 user for AWS credentials. Provenance now lives in a sidecar outside the catalog
 graph.
 
+**The embedded DNS address is runtime-specific.** nginx's request-time `resolver`
+has to name it, and Docker answers on 127.0.0.11 while podman's aardvark-dns
+answers on the network gateway. Hardcoding either one breaks the other in the
+slowest possible way: nginx starts, static files serve, and every proxied route
+hangs for the resolver timeout and returns nothing — `verify.sh` shows the whole
+app-shell section passing and every proxy reporting HTTP 000. `entrypoint.sh`
+reads it from the container's own resolv.conf. It reads it ONCE, so recreating the
+network means recreating the webapp container too.
+
+**Exec-form healthchecks can be re-split on whitespace.** podman splits
+`["CMD","python","-c","import x; ..."]` on spaces, so python receives just
+`import` and a healthy container sits at "unhealthy" forever. Use `CMD-SHELL` with
+one string for any probe whose arguments contain spaces.
+
 **`localhost` is not a synonym for 127.0.0.1.** Servers here bind IPv4-only, and
 some images resolve `localhost` to `::1` first, so a healthcheck naming
 `localhost` fails while the service is fine. Use the literal address.

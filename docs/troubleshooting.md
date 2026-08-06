@@ -40,6 +40,32 @@ explicit `resolver`, which defers resolution to request time: a missing service
 costs a 502 on its own route and nothing else. If you see this error after
 editing `nginx.conf.template`, a literal hostname crept back in.
 
+## The app shell loads but every proxied route returns 000
+
+Distinctive signature: `make verify` passes the whole `app shell` section and then
+reports `HTTP 000` for `/data/`, `/mcp`, `/titiler` and `/basemap` — each after a
+long pause rather than immediately.
+
+That is nginx's `resolver` pointing at the wrong address. Check what the container
+decided:
+
+```bash
+docker compose logs webapp | grep 'DNS resolver'
+docker compose exec -T webapp grep ^nameserver /etc/resolv.conf
+```
+
+The two should agree. Docker's embedded DNS answers on 127.0.0.11; podman's
+aardvark-dns answers on the network gateway instead. `entrypoint.sh` reads the
+address from resolv.conf so neither is hardcoded, and `DNS_RESOLVER` overrides it
+if that heuristic picks wrong.
+
+It is read once at start, so if you recreated the network without recreating the
+container, the address can be stale:
+
+```bash
+docker compose up -d --force-recreate webapp
+```
+
 ## Services are healthy but cannot reach each other
 
 Symptom: every container reports healthy, the app serves static files, and every
