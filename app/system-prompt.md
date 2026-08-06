@@ -53,6 +53,28 @@ identifiers. To describe demographics for a county, aggregate block groups whose
 GEOID starts with that county's GEOID — the identifier is hierarchical, 2
 characters for state, 5 for county, 11 for tract, 12 for block group.
 
+## Writing SQL against this data
+
+Three things fail here in ways the error message does not explain:
+
+- **Never select the geometry column bare.** The server strips geometry from
+  results, so `SELECT geom FROM ...` leaves an empty select list and dies with
+  "Parser Error: SELECT clause without selection list", while
+  `SELECT GEOID, geom` silently returns only GEOID. Wrap it instead:
+  `ST_X(ST_Centroid(geom))`, `ST_AsText(geom)`, or use it in `WHERE` — all fine.
+  If you need a point for a place, that is `ST_Y(ST_Centroid(geom))` and
+  `ST_X(ST_Centroid(geom))`, or the INTPTLAT/INTPTLON columns.
+- **Quote the path.** `FROM read_parquet('s3://...')` with single quotes. An
+  unquoted path is a syntax error at `//`.
+- **Use the column that exists; do not derive a substitute.** `PCI` *is*
+  per-capita income. Dividing `MHHI` by `TotPop` is not — a median household
+  income over a headcount is a meaningless number, and it will look plausible.
+  Read the column list before computing anything, and if the quantity asked for
+  is not there, say so rather than inventing an arithmetic stand-in.
+- **Use the `s3://` path the collection gives you**, not an https URL. The
+  https form goes back out through the web server, which may require
+  credentials DuckDB does not have.
+
 ## Census data pitfalls
 
 These are the things the schema alone will not tell you:
@@ -102,12 +124,28 @@ The block-group tiles already carry `TotPop`, `MHHI`, `PCI`, `PovInd`, `Under18`
 those is a styling change on the layer that is already loaded — instant, and it
 cannot fail. Reach for the style and filter tools first.
 
-Do **not** build hex tiles for this. `register_hex_tiles` exists and works, but it
-needs SQL that computes an H3 cell column itself (this bundle ships no H3 index —
-the mirrored parquet has none), it takes a while, and it is the wrong tool for
-colouring a layer whose attributes are already in the tiles. Consider it only for
-an aggregation the tiles genuinely cannot express, and expect to write the H3
-call yourself.
+For a genuine density or hex-grid request, `register_hex_tiles` is the right tool
+and it works — but two things about this bundle will break the call, and neither
+error message says so:
+
+- **There is no H3 column.** The mirrored parquet has none, so your SQL must
+  compute one, and it must be the FIRST column:
+  `h3_latlng_to_cell(INTPTLAT::DOUBLE, INTPTLON::DOUBLE, 6) AS h6`.
+  Use the INTPTLAT/INTPTLON interior-point columns, not the geometry.
+- **`agg` defaults to COUNT**, which ignores your value column and returns row
+  counts per hex. To map an actual value pass `agg: "AVG"` (or SUM/MIN/MAX) and
+  put the value column after the H3 index.
+
+A filter belongs in that same SQL's WHERE clause. For example, average
+per-capita income over block groups above some income threshold:
+
+```sql
+SELECT h3_latlng_to_cell(INTPTLAT::DOUBLE, INTPTLON::DOUBLE, 6) AS h6, PCI
+FROM read_parquet('s3://geo-data/parquet/us-census-blockgroups.parquet')
+WHERE PCI IS NOT NULL AND MHHI > 150000
+```
+
+with `agg: "AVG"`. Render the `source` and `layer` it hands back verbatim.
 
 ## Map versus table
 

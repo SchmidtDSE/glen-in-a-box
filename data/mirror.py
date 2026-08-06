@@ -176,7 +176,13 @@ COLUMN_DOCS = {
     "Senior65": "Population 65 years and over.",
     "NoCar": "Households with no vehicle available.",
     # Geometry and area
-    "geom": "Polygon boundary, EPSG:4326.",
+    "geom": "Polygon boundary, EPSG:4326. NEVER put this column bare in a SELECT "
+            "list: the server strips geometry from results, so `SELECT geom` "
+            "becomes an empty select list and fails with 'Parser Error: SELECT "
+            "clause without selection list', and `SELECT GEOID, geom` silently "
+            "returns only GEOID. Use it inside a function instead — "
+            "ST_X(ST_Centroid(geom)), ST_AsText(geom), or in a WHERE clause — "
+            "which all work normally.",
     "bbox": "Bounding box of the geometry, as a struct of xmin/ymin/xmax/ymax.",
     "ALAND": "Land area in square metres (TIGER ALAND).",
     "AWATER": "Water area in square metres (TIGER AWATER).",
