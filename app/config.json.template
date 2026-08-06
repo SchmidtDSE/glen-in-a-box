@@ -3,8 +3,12 @@
         "Deploy-time config, rendered from this template at container start.",
         "Contains no secrets and needs none: the LLM is a local container with",
         "no authentication, reached through the same-origin /api/llm/ proxy.",
-        "api_key is a placeholder because the OpenAI client insists on sending",
-        "an Authorization header; llama.cpp ignores it."
+        "api_key is what the OpenAI client puts in its Authorization header.",
+        "llama.cpp ignores it, but nginx does not: set LLM_API_KEY to a real",
+        "secret and the /api/llm/ route requires it. That is how the LLM is",
+        "protected when the box is not on a laptop, because an authenticating",
+        "reverse proxy cannot protect that route — the app overwrites the",
+        "Authorization header with this value on every request."
     ],
 
     "mcp_server_url": "/mcp",
@@ -15,7 +19,7 @@
             "value": "${LLM_MODEL_ID}",
             "label": "${LLM_MODEL_LABEL}",
             "endpoint": "/api/llm",
-            "api_key": "local"
+            "api_key": "${LLM_API_KEY}"
         }
     ]
 }

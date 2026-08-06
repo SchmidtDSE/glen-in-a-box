@@ -46,6 +46,11 @@ server {
     # posts to <endpoint>/chat/completions, so /api/llm/chat/completions must
     # land on /v1/chat/completions.
     location /api/llm/ {
+        # Rendered by entrypoint.sh: either a comment, or a check that the
+        # request carries `Authorization: Bearer <LLM_API_KEY>`. See that file
+        # for why this route cannot be left to a fronting proxy.
+        ${LLM_AUTH_GUARD}
+
         set $upstream_llm "http://llm:8080";
         rewrite ^/api/llm/(.*)$ /v1/$1 break;
         proxy_pass $upstream_llm;

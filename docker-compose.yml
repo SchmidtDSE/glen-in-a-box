@@ -53,6 +53,9 @@ services:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       LLM_MODEL_ID: ${LLM_MODEL_ID:-qwen3-8b}
       LLM_MODEL_LABEL: ${LLM_MODEL_LABEL:-Qwen3 8B (local)}
+      # Leave empty for a laptop. Set it to a secret for anything reachable from
+      # elsewhere — it is the only guard on /api/llm/. See app/entrypoint.sh.
+      LLM_API_KEY: ${LLM_API_KEY:-local}
     depends_on:
       rustfs:
         condition: service_healthy

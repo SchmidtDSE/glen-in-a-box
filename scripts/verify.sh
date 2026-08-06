@@ -141,7 +141,12 @@ if [ "$ONLY" = "all" ]; then
 
     echo ""
     echo "  LLM"
-    models=$(curl -s --max-time 30 "$ORIGIN/api/llm/models")
+    # When LLM_API_KEY is set, /api/llm/ requires it — the app sends it as a
+    # bearer token on every request, and so must this probe.
+    llm_auth=()
+    [ -n "${LLM_API_KEY:-}" ] && [ "${LLM_API_KEY}" != "local" ] && \
+        llm_auth=(-H "Authorization: Bearer ${LLM_API_KEY}")
+    models=$(curl -s --max-time 30 "${llm_auth[@]}" "$ORIGIN/api/llm/models")
     if grep -q '"id"' <<<"$models"; then
         printf '  ✓ %-38s %s\n' "model loaded" "$(grep -o '"id":"[^"]*"' <<<"$models" | head -1)"
         pass=$((pass + 1))
