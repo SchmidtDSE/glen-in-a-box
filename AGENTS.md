@@ -114,6 +114,13 @@ below it. Quote anything with spaces or parentheses.
 defaulting to 80, not 8000 — the compose file sets `PORT: 8000` so the route map
 in `nginx.conf.template` stays true. Check, don't assume.
 
+**Headers leak downstream.** rustfs speaks S3 and parses any inbound
+`Authorization` header as SigV4, so a Basic credential from a proxy in front
+makes `/data/` — and only `/data/` — return 400 while everything else works.
+nginx clears it on that route. More generally: think about what the browser and
+any fronting proxy add to a request before it reaches a service that has opinions
+about headers.
+
 **Healthchecks need a binary that exists.** `maptiler/tileserver-gl` ships
 neither `curl` nor `wget`, so a curl probe pins it at `unhealthy` while it serves
 tiles perfectly — a false alarm that sends you debugging the wrong thing. It has

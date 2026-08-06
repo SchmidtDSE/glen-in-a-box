@@ -121,6 +121,18 @@ server {
         rewrite ^/data/(.*)$ /$1 break;
         proxy_pass $upstream_data;
         proxy_set_header Host $host;
+
+        # Strip inbound Authorization before it reaches the object store.
+        # rustfs speaks S3, so it tries to parse any Authorization header as AWS
+        # SigV4 and rejects what it cannot understand:
+        #     400 InvalidRequest  "invalid header: authorization"
+        # That happens the moment this box sits behind a proxy doing basic auth,
+        # or a browser replays credentials on same-origin requests — the app
+        # shell and every other route keep working, and only the data 400s, which
+        # reads as "the bundle is broken" rather than "a header leaked through".
+        # These objects are anonymously readable by design (see seed/entrypoint.sh),
+        # so no credential is wanted here at all.
+        proxy_set_header Authorization "";
         proxy_set_header Range $http_range;
         proxy_set_header If-Range $http_if_range;
 

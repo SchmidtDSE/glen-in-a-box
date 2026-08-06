@@ -57,11 +57,13 @@ and run `make up-airgap`.
 | RAM | 16 GB | 32 GB |
 | Disk | 25 GB | 40 GB |
 | CPU | 4 cores | 8+ cores |
-| GPU | not required | NVIDIA, via `--profile gpu` |
+| GPU | not required | NVIDIA, via `make up-gpu` |
 
 On CPU, expect roughly 5–15 tokens/second from the 8B model — fine for one
-person asking questions, slow if several people share the box. A GPU makes it
-feel instant.
+person asking questions, slow if several people share the box. On a GPU
+(`make up-gpu`) the same model measured ~87 tokens/second on a Quadro RTX 8000,
+which is the difference between a demo that waits and one that does not. The 8B
+Q4_K_M needs about 6 GB of VRAM.
 
 ---
 
@@ -77,7 +79,7 @@ system has no dependency on any network. `make bundle` is the one online step:
 |---|---|---|
 | `make images` | container images; the webapp build vendors every frontend library | ~2 GB |
 | `make model` | GGUF weights from Hugging Face | ~5 GB |
-| `make basemap` | US extract of the Protomaps planet build, plus glyphs | ~1–2 GB |
+| `make basemap` | US extract of the Protomaps planet build, plus glyphs | ~4 GB |
 | `make data` | pre-processed census parquet + PMTiles, mirrored | ~3 GB |
 
 `make data` mirrors already-processed layers from the `public-census` STAC

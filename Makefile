@@ -9,6 +9,7 @@ SHELL := /bin/bash
 
 COMPOSE := docker compose
 AIRGAP  := $(COMPOSE) -f docker-compose.yml -f docker-compose.airgap.yml
+GPU     := $(COMPOSE) -f docker-compose.yml -f docker-compose.gpu.yml
 
 # Containerised so the host needs nothing but Docker — no node, no GDAL, no
 # tippecanoe, no Python.
@@ -28,6 +29,7 @@ help:
 	@echo ""
 	@echo "  RUN (no internet needed)"
 	@echo "    make up            start the stack"
+	@echo "    make up-gpu        start with the LLM on an NVIDIA GPU"
 	@echo "    make seed          load the data bundle into object storage"
 	@echo "    make verify        check every service end to end"
 	@echo "    make logs          follow logs"
@@ -97,6 +99,15 @@ up: .env preflight
 	@echo "Starting. The LLM container loads several GB of weights and will"
 	@echo "report unhealthy for a minute or two — that is expected."
 	@echo "Then: make seed (first run only), then open the app."
+
+# GPU: patches the llm service in place rather than adding a second one. See
+# docker-compose.gpu.yml for why a compose profile cannot do this.
+.PHONY: up-gpu
+up-gpu: .env preflight
+	@echo "==> starting with the LLM on GPU $${GPU_DEVICE_ID:-0}"
+	$(GPU) up -d
+	@echo ""
+	@echo "Weights load into VRAM in well under a minute. Then: make verify"
 
 .PHONY: up-airgap
 up-airgap: .env preflight

@@ -42,7 +42,13 @@ services:
         GEO_AGENT_REF: ${GEO_AGENT_REF:-v3.25.0}
     image: glen-in-a-box/webapp:${TAG:-local}
     ports:
-      - "${PUBLIC_PORT:-8080}:80"
+      # PUBLIC_BIND controls which host interface the port lands on, and the
+      # default of 0.0.0.0 is only right for a laptop. Behind a reverse proxy
+      # that enforces auth, publishing on every interface quietly defeats it:
+      # the proxy's hostname requires a password while http://<host>:8080 does
+      # not. Set PUBLIC_BIND to 127.0.0.1, or to the address the proxy reaches
+      # this box on, so there is exactly one way in.
+      - "${PUBLIC_BIND:-0.0.0.0}:${PUBLIC_PORT:-8080}:80"
     environment:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       LLM_MODEL_ID: ${LLM_MODEL_ID:-qwen3-8b}
@@ -64,7 +70,8 @@ services:
   # silently reduces the agent to a chatbot that cannot touch the map or run
   # SQL. Everything in this stack depends on that flag.
   #
-  # GPU: `docker compose --profile gpu up` swaps in the CUDA image instead.
+  # GPU: `make up-gpu` (docker-compose.gpu.yml) swaps in the CUDA image and
+  # offloads all layers. A compose profile cannot do this — see that file.
   llm:
     <<: *restart
     image: ghcr.io/ggml-org/llama.cpp:server

@@ -71,6 +71,36 @@ Check what actually survives with:
 bash -c 'set -a; . ./.env; set +a; env | sort'
 ```
 
+## Only the /data/ route fails, with 400 InvalidRequest
+
+```
+<Error><Code>InvalidRequest</Code><Message>invalid header: authorization</Message></Error>
+```
+
+An `Authorization` header reached the object store. rustfs speaks S3, so it tries
+to parse any such header as AWS SigV4 and rejects a Basic one — while the app
+shell, the LLM, the MCP server and the basemap all keep working. It reads as "the
+data bundle is broken" and is nothing of the kind.
+
+This appears the moment the box sits behind a reverse proxy doing basic auth, or
+a browser replays credentials on same-origin requests. `nginx.conf.template`
+clears the header on the `/data/` route for exactly this reason; if you are
+adding an authenticating proxy, also strip it there (Traefik's basicAuth has
+`removeHeader: true`). These objects are anonymously readable by design, so no
+credential belongs on that route at all.
+
+## Deploying behind a reverse proxy
+
+Set `PUBLIC_ORIGIN` to the externally visible URL — scheme included — and re-run
+`make seed`, since it is baked into the STAC hrefs. Then set `PUBLIC_BIND` to the
+address the proxy reaches this box on, rather than leaving the port on `0.0.0.0`:
+otherwise the proxy asks for a password and a direct hit on `http://<host>:8080`
+does not, which makes the authentication decorative.
+
+The proxy also needs generous timeouts. A tool-calling turn can run for minutes,
+and nginx here uses 600s to match geo-agent's own client timeout; a proxy with a
+30s default becomes the weak link and the UI looks hung.
+
 ## The map loads but no layers appear
 
 Almost always `PUBLIC_ORIGIN`.
