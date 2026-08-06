@@ -14,10 +14,18 @@
         "   Consequence: PUBLIC_ORIGIN must match the URL in the address bar,",
         "   or child collections 404 while this top-level file looks fine.",
         "",
-        "Features absent on purpose, not by oversight: geocoder (Nominatim and",
+        "Features off on purpose, not by oversight: geocoder (Nominatim and",
         "Photon are both remote), voice transcription (needs a speech model",
         "this box does not ship), and upload (writes to object storage that is",
-        "read-only here). See docs/offline.md."
+        "read-only here). See docs/offline.md.",
+        "",
+        "3. `geocoder.enabled: false` must be stated, not implied. Upstream",
+        "   computes `geoCfg.enabled !== false`, so an ABSENT geocoder block",
+        "   leaves the `geocode` agent tool REGISTERED, and the agent then",
+        "   calls nominatim.openstreetmap.org mid-conversation — a live network",
+        "   dependency at request time, which is the one thing this box must",
+        "   not have. Omitting a key is not the same as disabling a feature;",
+        "   check the upstream default before trusting an absence."
     ],
 
     "catalog": "/data/geo-data/stac/catalog.json",
@@ -29,6 +37,8 @@
     "draw_enabled": true,
     "charts": { "enabled": true },
     "geolocate": { "button": false, "agent_tool": false },
+    "geocoder": { "enabled": false, "search_box": false },
+
     "sidebar": { "enabled": true, "chat_title": "Ask about US census data" },
 
     "view": { "center": [-98.5, 39.5], "zoom": 4 },

@@ -39,7 +39,10 @@ echo "==> restoring payload"
 cd ..
 $DECOMP "$INDIR/payload.tar.$EXT" | tar -x
 
-[ -f MANIFEST.txt ] && cat "$INDIR/MANIFEST.txt" || true
+# cwd is the repo root by now (the cd .. above), so the test has to name the
+# same path as the cat — an earlier version tested ./MANIFEST.txt and silently
+# never printed the manifest it had just been handed.
+[ -f "$INDIR/MANIFEST.txt" ] && cat "$INDIR/MANIFEST.txt" || true
 
 cat <<'EOF'
 

@@ -51,9 +51,16 @@ ACS_YEAR = os.environ.get("ACS_YEAR", "2023")
 TIGER_BASE = f"https://www2.census.gov/geo/tiger/TIGER{TIGER_YEAR}"
 ACS_BASE = f"https://api.census.gov/data/{ACS_YEAR}/acs/acs5"
 
-# Optional. The API serves anonymous requests fine at this volume (about 60
-# calls); a key only matters if you are hammering it.
+# REQUIRED, despite what older docs (including this file's) used to say. The
+# Census API no longer serves anonymous data queries: it answers them with a 302
+# to /data/missing_key.html, an HTML page. urllib follows the redirect happily,
+# so the first thing that notices is json.loads, which fails with
+# "Expecting value: line 1 column 1" and no hint that a key is the problem.
+#
+# Keys are free and issued instantly: https://api.census.gov/data/key_signup.html
 CENSUS_API_KEY = os.environ.get("CENSUS_API_KEY", "").strip()
+
+KEY_SIGNUP = "https://api.census.gov/data/key_signup.html"
 
 # ACS variables. Kept deliberately short: each one costs a column in every
 # parquet file and, if promoted to TILE_FIELDS, bytes in every tile.
@@ -124,21 +131,54 @@ def acs_get(params: dict[str, str]) -> list[list[str]]:
         q["key"] = CENSUS_API_KEY
     url = ACS_BASE + "?" + urllib.parse.urlencode(q, safe=":*")
     with urllib.request.urlopen(url, timeout=180) as r:
-        return json.loads(r.read())
+        final_url = r.geturl()
+        body = r.read()
+
+    # A rejected request is a 302 to an HTML page, not an HTTP error, so this
+    # has to be detected by looking at where we landed. Reported here rather
+    # than left to json.loads, whose message says nothing about keys.
+    if any(s in final_url for s in ("missing_key", "invalid_key", "key_signup")):
+        problem = "is not valid" if "invalid_key" in final_url else "is missing"
+        raise SystemExit(
+            f"\nThe Census API rejected the request: the API key {problem}.\n"
+            f"  redirected to: {final_url}\n\n"
+            f"Get one free at {KEY_SIGNUP}, then re-run with it set:\n"
+            f"  CENSUS_API_KEY=... make data\n"
+            f"or add CENSUS_API_KEY to .env.\n"
+        )
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as e:
+        raise SystemExit(
+            f"\nThe Census API returned a non-JSON response.\n"
+            f"  url:   {url.replace(CENSUS_API_KEY, '<KEY>') if CENSUS_API_KEY else url}\n"
+            f"  final: {final_url}\n"
+            f"  first 200 bytes: {body[:200]!r}\n\n"
+            f"If that looks like an HTML page, the key is missing, invalid, or\n"
+            f"the dataset for ACS_YEAR={ACS_YEAR} is not published.\n"
+        ) from e
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ACS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# American Samoa, Guam, Northern Mariana Islands, US Virgin Islands. They have
+# patchy ACS coverage and no TIGER tract files in the same layout, so they are
+# excluded rather than left to fail mid-run. Puerto Rico (72) IS included.
+#
+# TIGER's national state file still contains all four, so the states level ends
+# up with four geometries that can never join to an ACS row. That is expected,
+# not a broken join — see build_parquet, which discounts them before deciding
+# whether the unmatched fraction is worth warning about.
+EXCLUDED_STATE_FIPS = {"60", "66", "69", "78"}
+
+
 def state_fips() -> list[str]:
     rows = acs_get({"get": "NAME", "for": "state:*"})
     # Skip the header row; the FIPS code is the trailing column.
     codes = sorted(r[-1] for r in rows[1:])
-    # Territories other than Puerto Rico have patchy ACS coverage and no TIGER
-    # tract files in the same layout, so they are excluded rather than left to
-    # fail mid-run.
-    return [c for c in codes if c not in {"60", "66", "69", "78"}]
+    return [c for c in codes if c not in EXCLUDED_STATE_FIPS]
 
 
 def fetch_acs(level: str) -> Path:
@@ -293,13 +333,28 @@ def build_parquet(con: duckdb.DuckDBPyConnection, level: str,
     unmatched = con.execute(
         f"SELECT count(*) FROM read_parquet('{dest}') WHERE pop_total IS NULL"
     ).fetchone()[0]
-    log(f"    {dest.name}: {n:,} rows ({unmatched:,} without ACS match)")
 
-    # A large unmatched fraction means the GEOID join failed — usually a
-    # TIGER/ACS vintage mismatch. Worth shouting about, because the result
-    # still looks like a valid file.
-    if n and unmatched / n > 0.05:
-        log(f"    WARNING: {unmatched / n:.1%} of {level} have no ACS match. "
+    # The four excluded territories are in TIGER and never in ACS, so they are
+    # unmatched by design. Counting them made the states level report 4/56 =
+    # 7.1% and trip the warning below on every single successful build — and a
+    # warning that always fires is a warning nobody reads.
+    excluded = ", ".join(f"'{c}'" for c in sorted(EXCLUDED_STATE_FIPS))
+    expected_unmatched = con.execute(
+        f"SELECT count(*) FROM read_parquet('{dest}') "
+        f"WHERE pop_total IS NULL AND substr(GEOID, 1, 2) IN ({excluded})"
+    ).fetchone()[0]
+
+    unexpected = unmatched - expected_unmatched
+    matchable = n - expected_unmatched
+    note = f" ({expected_unmatched} of them excluded territories)" if expected_unmatched else ""
+    log(f"    {dest.name}: {n:,} rows ({unmatched:,} without ACS match{note})")
+
+    # A large unmatched fraction among rows that SHOULD have matched means the
+    # GEOID join failed — usually a TIGER/ACS vintage mismatch. Worth shouting
+    # about, because the result still looks like a valid file.
+    if matchable and unexpected / matchable > 0.05:
+        log(f"    WARNING: {unexpected / matchable:.1%} of {level} that should have "
+            f"an ACS match do not. "
             f"Check that TIGER_YEAR={TIGER_YEAR} and ACS_YEAR={ACS_YEAR} are compatible.")
     return dest
 
@@ -377,7 +432,8 @@ DESCRIPTIONS = {
 
 COLUMN_DOCS = [
     ("GEOID", "string", "Census geographic identifier. The join key — names are not unique."),
-    ("NAME", "string", "Geography name."),
+    ("NAME", "string", "Geography name. At the tract level this is the bare "
+                       "tract number; prefer NAMELSAD for display."),
     ("STUSPS", "string", "Two-letter state abbreviation."),
     ("pop_total", "double", "Total population (ACS B01003_001E)."),
     ("median_income", "double", "Median household income in dollars (ACS B19013_001E). "
@@ -398,16 +454,16 @@ def write_stac(level: str) -> None:
     d = OUT / "stac" / cid
     d.mkdir(parents=True, exist_ok=True)
 
-    # NAMELSAD only exists on the tract file; STUSPS is absent from the raw
-    # state file's perspective but present in all three outputs.
-    columns = [
-        {"name": n, "type": t, "description": desc}
-        for n, t, desc in COLUMN_DOCS
-        if not (n == "NAME" and level == "tracts")
-    ]
+    # These docs are what the agent reads via get_schema, so they have to match
+    # build_parquet's SELECT exactly. The tract level adds NAMELSAD and KEEPS
+    # NAME (TIGER carries both: NAME is the bare tract number, NAMELSAD spells it
+    # out) — an earlier version dropped NAME here while still writing it to the
+    # parquet, which left the agent unaware of a column it could have queried.
+    columns = [{"name": n, "type": t, "description": desc} for n, t, desc in COLUMN_DOCS]
     if level == "tracts":
         columns.insert(1, {"name": "NAMELSAD", "type": "string",
-                           "description": "Tract name including the 'Census Tract' prefix."})
+                           "description": "Tract name including the 'Census Tract' prefix, "
+                                          "e.g. 'Census Tract 4001'."})
 
     collection = {
         "type": "Collection",
@@ -494,6 +550,20 @@ def write_catalog() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> int:
+    # Checked before anything is downloaded: the TIGER fetch happens first and
+    # is hundreds of MB, and there is no reason to spend it only to fail on the
+    # first ACS call afterwards.
+    if not CENSUS_API_KEY:
+        raise SystemExit(
+            "\nCENSUS_API_KEY is not set, and the Census API no longer answers\n"
+            "anonymous data queries — it redirects them to an HTML page.\n\n"
+            f"Get a key (free, instant): {KEY_SIGNUP}\n\n"
+            "Then either add it to .env:\n"
+            "    CENSUS_API_KEY=your_key_here\n"
+            "or pass it for one run:\n"
+            "    CENSUS_API_KEY=your_key_here make data\n"
+        )
+
     OUT.mkdir(parents=True, exist_ok=True)
     CACHE.mkdir(parents=True, exist_ok=True)
 

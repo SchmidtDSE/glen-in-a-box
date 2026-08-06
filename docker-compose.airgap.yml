@@ -1,22 +1,52 @@
 # Air-gap verification overlay.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.airgap.yml up
+#   (or: make up-airgap)
 #
-# Flips the shared network to `internal: true`, which strips the containers'
-# default route. Any service that still tries to reach the internet fails
-# loudly instead of quietly working on your dev machine and breaking in the
-# field. Published ports keep working — ingress from the host is unaffected.
+# Cuts outbound networking so that any service still reaching for the internet
+# fails loudly here instead of quietly working on your dev machine and breaking
+# in the field.
 #
-# This proves the SERVER side is self-contained. It says nothing about the
-# BROWSER, which runs on your host and has its own network. To verify that
-# half, turn your machine's wifi off and reload the page, or watch the
-# DevTools network tab for any request whose origin is not PUBLIC_ORIGIN.
-# See docs/offline.md.
+# ── Why webapp gets a second network ─────────────────────────────────────────
+# `internal: true` does more than drop the default route: it also stops
+# published ports from working. Putting every service on one internal network
+# therefore yields a stack that is perfectly air-gapped and completely
+# unreachable — `curl localhost:8080` gets no answer, so you cannot open the app
+# to check whether the app is fine.
+#
+# So the five backend services stay on the internal network with no route out,
+# and webapp — which is the front door, and the one service that never makes an
+# outbound request of its own — additionally joins a normal bridge network to
+# carry its published port.
+#
+# ── What this does and does not prove ────────────────────────────────────────
+# PROVES: llm, mcp, rustfs, titiler and basemap need no internet at run time.
+#         Those are the services that would otherwise fetch a DuckDB extension,
+#         a model file, or a remote tile, and here they cannot.
+#
+# DOES NOT PROVE: that the BROWSER is offline-clean — it runs on your host with
+#         its own network — nor that nginx itself makes no outbound request.
+#         For both, the honest test is the physical one: turn this machine's
+#         networking off and reload the page, watching the DevTools network tab
+#         for any request whose origin is not PUBLIC_ORIGIN. See docs/offline.md.
 
 services:
   # `pull_policy: never` turns a missing image into an immediate error rather
   # than a registry timeout — the failure you actually want in an air gap.
-  webapp:  { pull_policy: never }
+  webapp:
+    pull_policy: never
+    # Both networks: `glen` to reach the backends, `edge` so the published port
+    # works.
+    #
+    # The `priority` values are load-bearing, not decoration. Attached to two
+    # networks without them, `edge` wins the ordering and docker's embedded DNS
+    # starts forwarding lookups to the HOST's resolver instead of answering from
+    # its own container table — so `mcp` becomes `mcp.<your-search-domain>`,
+    # NXDOMAINs, and every proxied route 502s while the static app serves fine.
+    # A higher priority on glen keeps container-name resolution authoritative.
+    networks:
+      glen: { priority: 100 }
+      edge: { priority: 10 }
   llm:     { pull_policy: never }
   rustfs:  { pull_policy: never }
   mcp:     { pull_policy: never }
@@ -26,3 +56,5 @@ services:
 networks:
   glen:
     internal: true
+  edge:
+    driver: bridge

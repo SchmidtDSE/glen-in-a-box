@@ -4,6 +4,74 @@ Start with `make verify` — it probes every service through the public origin,
 which is the path the browser takes, and most entries below are things it will
 name directly.
 
+## Nothing responds on port 8080 at all
+
+Check whether nginx is even running:
+
+```bash
+docker compose ps webapp
+docker compose logs webapp | tail -20
+```
+
+`host not found in upstream` means nginx could not resolve one of the services it
+proxies. nginx resolves literal upstream hostnames at *startup* and treats a
+failure as fatal, so historically one absent service — usually `llm`, the slowest
+to start and the most likely to be skipped — stopped the entire front door and
+served nothing at all. Every `proxy_pass` now goes through a variable plus an
+explicit `resolver`, which defers resolution to request time: a missing service
+costs a 502 on its own route and nothing else. If you see this error after
+editing `nginx.conf.template`, a literal hostname crept back in.
+
+## `make seed` succeeds but the agent says it has no datasets
+
+Check the hrefs actually got substituted:
+
+```bash
+curl -s http://localhost:8080/data/geo-data/stac/catalog.json | grep -c 'PUBLIC_ORIGIN'
+docker compose logs mcp | grep 'Datasets loaded'
+```
+
+A literal `${PUBLIC_ORIGIN}` in the output means the substitution did not run.
+The seed job now refuses to upload in that case rather than exiting 0 with a
+broken catalog, so an older bundle in the bucket is the likely cause — re-run
+`make seed`, then `docker compose restart mcp`, since the MCP server reads the
+catalog once at startup.
+
+`Datasets loaded: 0` with clean hrefs means the MCP server could not fetch the
+collections it was pointed at. Check `STAC_CATALOG_URL` resolves from inside the
+container.
+
+## `make data` fails with a JSON decode error
+
+The Census API needs an API key and no longer says so in a way that looks like an
+error — it answers `302` with an HTML page. Get one free at
+[api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html)
+and put it in `.env` as `CENSUS_API_KEY`. See [data.md](data.md).
+
+## `make data` fails with "Too many open files"
+
+tippecanoe opens temp files in proportion to core count, and Docker's default
+soft limit of 1024 is not enough on a many-core machine. `make data` raises it
+via `--ulimit nofile=65536:65536`; if you are invoking the builder by hand, pass
+the same flag.
+
+## A variable in `.env` seems to be ignored
+
+`.env` is read two ways: docker compose parses it itself, and the shell scripts
+plus the Makefile `source` it. Shell sourcing stops at the first syntax error, so
+an unquoted value containing spaces or parentheses silently unsets **everything
+below that line**. Quote such values:
+
+```
+LLM_MODEL_LABEL="Qwen3 8B (local)"
+```
+
+Check what actually survives with:
+
+```bash
+bash -c 'set -a; . ./.env; set +a; env | sort'
+```
+
 ## The map loads but no layers appear
 
 Almost always `PUBLIC_ORIGIN`.
@@ -41,9 +109,21 @@ make basemap-verify
 
 If tiles return 200 with a valid but *blank* PNG, the style generated correctly
 but resolved no data — that is the `SOURCE_URL` scheme mismatch described in
-[basemap/README.md](../basemap/README.md), and it is a one-line fix.
+[basemap/README.md](../basemap/README.md), and it is a one-line fix. For
+calibration: a blank render of these styles is about 1.8 KB, and a tile with land
+in it runs 15–30 KB.
+
+If tiles return **HTTP 500**, check the log for `ENOENT` on a sprite path. A
+sprite that fails to load takes the whole render down; the usual cause is a
+doubled path (`/data/sprites/sprites/v4/...`) from the style's `sprite` value
+being written relative to the wrong root. See
+[basemap/README.md](../basemap/README.md).
 
 If glyphs 404, `basemap/data/fonts` was not populated: `make basemap`.
+
+If the container sits at `unhealthy` while tiles serve perfectly, the healthcheck
+is wrong rather than the service — `maptiler/tileserver-gl` ships neither `curl`
+nor `wget`, so the probe has to use `node`.
 
 ## The chat sends a message and nothing comes back
 

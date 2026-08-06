@@ -38,6 +38,8 @@ the host.
 git clone https://github.com/SchmidtDSE/glen-in-a-box
 cd glen-in-a-box
 cp .env.example .env
+# Then put a free Census API key in .env — `make data` cannot run without one:
+#   https://api.census.gov/data/key_signup.html
 
 make bundle     # ONLINE, once. ~2 hours, ~10 GB downloaded.
 make up
@@ -79,6 +81,14 @@ system has no dependency on any network. `make bundle` is the one online step:
 | `make model` | GGUF weights from Hugging Face | ~5 GB |
 | `make basemap` | US extract of the Protomaps planet build, plus glyphs | ~1–2 GB |
 | `make data` | TIGER/Line geometry and ACS tables, built into parquet + PMTiles | ~1–2 GB |
+
+`make data` needs `CENSUS_API_KEY` set in `.env`. The Census API stopped serving
+anonymous data queries and signals it with a redirect to an HTML page rather than
+an error, so the key is checked up front. It is free and instant.
+
+`make basemap` pins a dated Protomaps planet build, and `build.protomaps.com`
+retains only a few recent weeks — if the pin has aged out the build stops early
+and tells you to pick a newer date.
 
 To move a built box somewhere with no connection at all:
 
@@ -155,6 +165,15 @@ right. With a single front door there is one URL that works for both.
 | Upload | Writes to object storage that is read-only here |
 | Satellite basemap | Offline imagery would be tens of gigabytes; the button shows a dark cartographic style instead |
 | Carbon dashboard link | Points at a Nautilus service |
+
+"Off" has to be stated, not implied. The geocoder is the cautionary case:
+upstream enables the `geocode` agent tool unless it is explicitly disabled
+(`geoCfg.enabled !== false`), so simply omitting the `geocoder` block from
+`layers-input.json` left the tool registered — and the agent would then call
+`nominatim.openstreetmap.org` in the middle of answering a question. A live
+network dependency at request time is exactly what this box must not have, and no
+amount of build-time vendoring catches it. Before trusting that an absent config
+key means a disabled feature, check the upstream default.
 
 ---
 

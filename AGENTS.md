@@ -17,13 +17,16 @@ Before adding any URL to any file, ask which phase it runs in. If the answer is
 | Repo | Role |
 |---|---|
 | [geo-agent](https://github.com/boettiger-lab/geo-agent) | Core library. Snapshotted into the webapp image at `GEO_AGENT_REF`, then patched. Never modified here. |
-| [mcp-data-server](https://github.com/boettiger-lab/mcp-data-server) | SQL + STAC backend. Used as a published image, configured by env only. |
+| [mcp-data-server](https://github.com/boettiger-lab/mcp-data-server) | SQL + STAC backend. Used as a published image (pin `MCP_TAG` to a version tag — `latest` has shipped broken), configured by env only. |
 | [geo-agent-template](https://github.com/boettiger-lab/geo-agent-template) | The online template this is the offline sibling of. |
 
 ## What to edit, and what not to
 
 **Edit freely:** `app/layers-input.json`, `app/system-prompt.md`,
 `data/build.py`, the docs.
+
+**`app/layers-input.json` is strict JSON** — no comments. Prose goes in the
+`_comment` array that is already there.
 
 **Edit carefully:** `app/vendor/*` — this is the offline machinery. See below.
 
@@ -66,6 +69,46 @@ keep it that way, or every aggregate silently goes wrong.
 
 **`/tiles/` belongs to the MCP server**, not TiTiler, which lives at
 `/titiler/`. Swapping them breaks hex pyramids.
+
+**An absent config key is not a disabled feature.** Upstream computes
+`geoCfg.enabled !== false`, so omitting the `geocoder` block from
+`layers-input.json` *registers* the `geocode` agent tool and the agent calls
+Nominatim mid-conversation. Check the upstream default before trusting an
+absence. This is the only class of bug here that the build-time offline gate
+cannot see, because nothing is fetched until a user asks the right question.
+
+**Missing tools in a minimal base image.** `for f in $(find ...)` with no
+`find` on PATH is an empty loop, and `if grep -q` with no `grep` is a false
+branch. Neither trips `set -e`. That is how `make seed` came to exit 0 after
+uploading a STAC catalog full of unsubstituted `${PUBLIC_ORIGIN}` strings.
+`seed/entrypoint.sh` now asserts its userland up front; extend that list if you
+add a tool.
+
+**Floating image tags.** `mcp-data-server:latest` has published as an image with
+an empty `/app` and `CMD ["python3"]` — it starts a REPL, gets no stdin, exits 0,
+and under `restart: unless-stopped` flaps forever logging nothing. Pin version
+tags for anything load-bearing.
+
+**nginx resolves upstreams at startup.** A literal hostname in `proxy_pass` that
+does not resolve is a fatal config error, so one absent service (usually `llm`)
+took down the whole front door and served nothing. Every `proxy_pass` goes
+through a variable plus `resolver 127.0.0.11`, which defers resolution to request
+time. Keep it that way, and note that variable form disables the implicit
+prefix-stripping — hence the explicit `rewrite ... break` in each location.
+
+**`.env` is parsed two ways.** docker compose has its own parser; the Makefile
+and `scripts/*.sh` `source` it as shell. Shell sourcing aborts at the first
+syntax error, so one unquoted value with a space silently unsets every variable
+below it. Quote anything with spaces or parentheses.
+
+**Upstream services do not agree on ports.** TiTiler's image binds `${PORT}`,
+defaulting to 80, not 8000 — the compose file sets `PORT: 8000` so the route map
+in `nginx.conf.template` stays true. Check, don't assume.
+
+**Healthchecks need a binary that exists.** `maptiler/tileserver-gl` ships
+neither `curl` nor `wget`, so a curl probe pins it at `unhealthy` while it serves
+tiles perfectly — a false alarm that sends you debugging the wrong thing. It has
+`node`; the MCP image has `python` but no `curl`.
 
 ## Changing the geo-agent version
 

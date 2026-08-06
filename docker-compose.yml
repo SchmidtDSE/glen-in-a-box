@@ -137,9 +137,13 @@ services:
   # DuckDB over the local S3. The upstream image already bakes the httpfs,
   # spatial, and h3 extensions into ~/.duckdb/extensions, which is the usual
   # reason DuckDB dies in an air gap — it otherwise fetches them on first use.
+  # MCP_TAG must be a real release. `latest` on this repo has published as an
+  # image with an EMPTY /app and `CMD ["python3"]`, which starts a REPL, gets
+  # no stdin, exits 0, and — under restart: unless-stopped — flaps forever with
+  # no error in the log. Pin a version tag and bump it deliberately.
   mcp:
     <<: *restart
-    image: ghcr.io/boettiger-lab/mcp-data-server:${MCP_TAG:-latest}
+    image: ghcr.io/boettiger-lab/mcp-data-server:${MCP_TAG:-v0.8.1}
     environment:
       # Default (anonymous) DuckDB S3 secret → the local rustfs.
       S3_DEFAULT_ENDPOINT: rustfs:9000
@@ -201,6 +205,11 @@ services:
     <<: *restart
     image: ghcr.io/developmentseed/titiler:latest
     environment:
+      # This image's gunicorn binds ${PORT}, defaulting to 80 — NOT 8000. Left
+      # unset, nginx's `proxy_pass http://titiler:8000/` gets connection
+      # refused on every COG tile, and /titiler/ 502s with nothing wrong
+      # upstream. Set it here so the route map in nginx.conf stays truthful.
+      PORT: "8000"
       AWS_S3_ENDPOINT: rustfs:9000
       AWS_HTTPS: "NO"
       AWS_VIRTUAL_HOSTING: "FALSE"
@@ -230,7 +239,12 @@ services:
       - ./basemap/config:/config:ro
       - ./basemap/data:/data:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      # node, not curl: this image ships neither curl nor wget, so a curl-based
+      # probe fails on every attempt and pins the container at "unhealthy" while
+      # it is in fact serving tiles perfectly — a false alarm that sends people
+      # debugging the basemap instead of whatever is actually wrong.
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:8080/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -77,10 +77,23 @@ data: .env
 	@echo "==> building census data bundle"
 	docker build -t glen-in-a-box/data-builder:local ./data
 	mkdir -p data/bundle data/cache
+	# .env is sourced here so CENSUS_API_KEY can live there like every other
+	# setting. Without this it would only be read from the calling shell, and a
+	# key written into .env would be silently ignored — the API then rejects the
+	# request and the build fails on something that looks unrelated.
+	# --ulimit nofile: tippecanoe opens temp files in proportion to core count,
+	# and Docker's default soft limit of 1024 is not enough on a many-core
+	# machine — it dies with "Too many open files" partway through tiling, after
+	# the download and join have already succeeded. The host's own limit is
+	# typically 1M; 65536 is ample and still polite.
+	@set -a; . ./.env; set +a; \
 	docker run --rm \
+		--ulimit nofile=65536:65536 \
 		-v "$(PWD)/data/bundle:/out" \
 		-v "$(PWD)/data/cache:/cache" \
 		-e CENSUS_API_KEY="$${CENSUS_API_KEY:-}" \
+		-e ONLY_LEVEL="$${ONLY_LEVEL:-}" \
+		-e BUILD_THREADS="$${BUILD_THREADS:-4}" \
 		glen-in-a-box/data-builder:local
 
 # ─────────────────────────────────────────────────────────────────────────────

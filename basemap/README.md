@@ -14,7 +14,21 @@ twice, `basemaps.cartocdn.com` once) and its glyph endpoint is hardcoded to
 | `data/us.pmtiles` | US extract of the Protomaps daily planet build, z0–12 | 1–2 GB |
 | `data/fonts/` | Glyph PBFs — MapLibre renders no text without these | ~150 MB |
 | `data/sprites/` | Icon sheets referenced by the themes | ~2 MB |
-| `config/styles/glen-{light,dark,white}.json` | Generated from `protomaps-themes-base` | ~200 KB each |
+| `config/styles/glen-{light,dark,white}.json` | Generated from `@protomaps/basemaps` | ~250 KB each |
+
+The style package is `@protomaps/basemaps`, not `protomaps-themes-base`. The
+latter is the old name and stops at 4.5.0; from v5 the project renamed the
+package and changed `layers()` to take a flavor object from `namedFlavor()`
+rather than a string. Passing a string to v5 still returns layers — just
+silently fewer of them.
+
+### The pinned Protomaps build expires
+
+`PROTOMAPS_BUILD` pins a dated planet build so two boxes built a week apart come
+out the same. But `build.protomaps.com` only keeps a few recent weeks, so the pin
+is reproducible for a while, not forever — once it ages out the archive 404s.
+`build.sh` checks the URL before starting the extract and tells you to pick a
+newer date. To pin durably, mirror the archive yourself and set `PROTOMAPS_URL`.
 
 `tileserver-gl` then renders raster tiles from the vector extract on demand and
 serves the glyphs, both behind the `/basemap/` nginx route.
@@ -38,9 +52,22 @@ const SOURCE_URL = 'mbtiles://{us}';
 
 `{us}` resolves against the `data.us` entry in [`config/config.json`](config/config.json).
 tileserver-gl uses the `mbtiles://` scheme as its generic local-data reference
-regardless of the backing format, but if your tileserver-gl version wants
+regardless of the backing format — verified against tileserver-gl 5.6.0 with a
+`pmtiles` data entry, which renders correctly. If a future version wants
 `pmtiles://{us}` instead, that is the single line to change — then re-run
 `make basemap` (the extract is cached, so only the styles regenerate).
+
+The other path that has to be exactly right is the sprite reference:
+
+```js
+sprite: `v4/${flavor}`,
+```
+
+That is resolved relative to `options.paths.sprites`, which is already
+`/data/sprites`. Writing `sprites/v4/light` makes tileserver-gl look for
+`/data/sprites/sprites/v4/light.png`, and a sprite that fails to load does not
+degrade gracefully — **every tile request returns HTTP 500**. If tiles 500 and
+the log mentions `ENOENT` and a doubled path, this is why.
 
 After `make up`:
 

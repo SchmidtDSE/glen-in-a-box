@@ -94,8 +94,19 @@ a clean fetch.
 Tracts are the slow part: 56 shapefile downloads, 56 API calls, and roughly
 85,000 features through tippecanoe. Budget half an hour or more.
 
-`CENSUS_API_KEY` is optional. The API serves the ~60 anonymous calls this makes
-without complaint; a key only matters at higher volume.
+`CENSUS_API_KEY` is **required**, and free — issued instantly at
+[api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html).
+Put it in `.env`:
+
+```
+CENSUS_API_KEY=your_key_here
+```
+
+The API no longer answers anonymous data queries. It does not return an HTTP
+error either: it replies `302` to an HTML page at `/data/missing_key.html`, so
+the first thing to notice used to be `json.loads` failing with
+`Expecting value: line 1 column 1`. `build.py` now checks for the key before it
+downloads anything, and detects the redirect if the key is present but rejected.
 
 ## Adding your own data
 
