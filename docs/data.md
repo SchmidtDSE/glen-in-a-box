@@ -36,6 +36,16 @@ and moved it twice for no gain. Hydration skips any object already present with
 the right size, which is what makes `make seed` cheap to re-run — and what makes
 an air-gapped restore work without touching the network at all.
 
+It also prunes: an object under a manifest-owned prefix (`parquet/`, `pmtiles/`,
+`hex/`, `hex-fractions/`, `cog/`) that the manifest no longer lists is stale and
+gets removed. Without that, dropping a layer leaves its objects in the bucket
+forever, invisible and costing disk — which is exactly what happened when the
+tract hex was removed and 6.7 GB stayed behind.
+
+One wrinkle worth knowing: rustfs stages large uploads under `.rustfs.sys/tmp`
+inside its volume and does not clear that promptly — after a full hydration it
+held 6.6 GB. Restarting the rustfs container releases it.
+
 Set `STAC_ONLY=0` to materialise everything on disk instead. You want that only
 if you specifically need `data/bundle/` to be the portable artifact; the normal
 air-gap path carries the object store, see below.
@@ -116,8 +126,11 @@ with `frac` summing to 1 per cell, which is what gives a composition. The `hex`
 table has one row per cell with the dominant class and is far smaller — prefer it
 for "what cover is this" rather than "what mix".
 
-Sizes: census hex is ~140 MB state, ~124 MB county, 6.7 GB tract, 4.8 GB block
-group; land-cover hex is 1.09 GB and its fractions 7.05 GB. The block-group table
+Sizes: census hex is ~140 MB state, ~124 MB county and 4.8 GB block group;
+land-cover hex is 1.09 GB and its fractions 7.05 GB. **Tracts have no hex asset**
+— block groups already join to the raster at finer granularity, and a tract's
+composition is the aggregate of the block groups sharing its GEOID prefix, so the
+6.7 GB bought no query that could not already be written. The block-group table
 is 646 million rows over 13.2 million distinct h8 cells, so aggregate against it
 and never list rows. `MIRROR_HEX=0` skips all of them.
 

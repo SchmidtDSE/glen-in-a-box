@@ -125,7 +125,12 @@ LAYERS = [
         "source": "census-2024/tract/stac-collection.json",
         "parquet": "tract-parquet",
         "pmtiles": "tract-pmtiles",
-        "hex": "tract-hex",
+        # No hex for tracts, deliberately. The H3 indexes exist for
+        # cross-tessellation joins against the raster, and block groups already
+        # do that at finer granularity — a tract's land-cover composition is the
+        # aggregate of its block groups, which share its GEOID prefix. Mirroring
+        # it too cost 6.7 GB and bought no query that could not already be
+        # written. Add "hex": "tract-hex" back if you find one.
         "title": "US Census Tracts (2024)",
         "description": (
             "Census tract boundaries from TIGER/Line 2024. Boundaries and TIGER "

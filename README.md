@@ -55,7 +55,7 @@ and run `make up-airgap`.
 | | Minimum | Comfortable |
 |---|---|---|
 | RAM | 16 GB | 32 GB |
-| Disk | 50 GB | 80 GB |
+| Disk | 45 GB | 70 GB |
 | CPU | 4 cores | 8+ cores |
 | GPU | not required | NVIDIA, via `make up-gpu` |
 
@@ -80,7 +80,7 @@ system has no dependency on any network. `make bundle` is the one online step:
 | `make images` | container images; the webapp build vendors every frontend library | ~2 GB |
 | `make model` | GGUF weights from Hugging Face | ~5 GB |
 | `make basemap` | US extract of the Protomaps planet build, plus glyphs | ~4 GB |
-| `make data` | STAC + a manifest (~80 KB); `make seed` then streams 25 GB of parquet, PMTiles, a COG and H3 hex into the box's object store | ~25 GB |
+| `make data` | STAC + a manifest (~80 KB); `make seed` then streams 18 GB of parquet, PMTiles, a COG and H3 hex into the box's object store | ~18 GB |
 
 `make data` mirrors already-processed layers from a `public-census` STAC catalog
 rather than rebuilding them from TIGER shapefiles and ACS API calls — no Census
