@@ -42,16 +42,32 @@ services:
         GEO_AGENT_REF: ${GEO_AGENT_REF:-v3.25.0}
     image: glen-in-a-box/webapp:${TAG:-local}
     ports:
-      - "${PUBLIC_PORT:-8080}:80"
+      # PUBLIC_BIND controls which host interface the port lands on, and the
+      # default of 0.0.0.0 is only right for a laptop. Behind a reverse proxy
+      # that enforces auth, publishing on every interface quietly defeats it:
+      # the proxy's hostname requires a password while http://<host>:8080 does
+      # not. Set PUBLIC_BIND to 127.0.0.1, or to the address the proxy reaches
+      # this box on, so there is exactly one way in.
+      - "${PUBLIC_BIND:-0.0.0.0}:${PUBLIC_PORT:-8080}:80"
     environment:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       LLM_MODEL_ID: ${LLM_MODEL_ID:-qwen3-8b}
       LLM_MODEL_LABEL: ${LLM_MODEL_LABEL:-Qwen3 8B (local)}
+      # Leave empty for a laptop. Set it to a secret for anything reachable from
+      # elsewhere — it is the only guard on /api/llm/. See app/entrypoint.sh.
+      LLM_API_KEY: ${LLM_API_KEY:-local}
     depends_on:
       rustfs:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      # 127.0.0.1, never `localhost`. These servers bind 0.0.0.0 (IPv4 only),
+      # and in some images `localhost` resolves to ::1 first — the probe is then
+      # refused while the service answers every real request perfectly, pinning
+      # the container at "unhealthy" for a reason nothing in the logs explains.
+      # It depends on the image's /etc/hosts, so it appears and disappears
+      # between rebuilds. All the healthchecks below use a literal address for
+      # the same reason.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -64,7 +80,8 @@ services:
   # silently reduces the agent to a chatbot that cannot touch the map or run
   # SQL. Everything in this stack depends on that flag.
   #
-  # GPU: `docker compose --profile gpu up` swaps in the CUDA image instead.
+  # GPU: `make up-gpu` (docker-compose.gpu.yml) swaps in the CUDA image and
+  # offloads all layers. A compose profile cannot do this — see that file.
   llm:
     <<: *restart
     image: ghcr.io/ggml-org/llama.cpp:server
@@ -82,7 +99,7 @@ services:
     healthcheck:
       # /health returns 503 until weights finish loading — that can take
       # minutes on a cold CPU start, hence the long start_period.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -106,7 +123,7 @@ services:
     volumes:
       - rustfs-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -190,7 +207,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz',timeout=5)"]
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -244,7 +261,7 @@ services:
       # it is in fact serving tiles perfectly — a false alarm that sends people
       # debugging the basemap instead of whatever is actually wrong.
       test: ["CMD", "node", "-e",
-             "require('http').get('http://localhost:8080/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+             "require('http').get('http://127.0.0.1:8080/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

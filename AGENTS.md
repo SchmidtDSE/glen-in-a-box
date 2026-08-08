@@ -114,6 +114,51 @@ below it. Quote anything with spaces or parentheses.
 defaulting to 80, not 8000 — the compose file sets `PORT: 8000` so the route map
 in `nginx.conf.template` stays true. Check, don't assume.
 
+**`app/system-prompt.md` is sent to the model verbatim — comments included.**
+geo-agent does `fetchText('system-prompt.md')` and concatenates it; nothing
+strips HTML comments. So a `<!-- note to maintainers -->` is prompt tokens the
+agent reads, and a note *about* the prompt becomes an instruction *in* it. Keep
+maintainer rationale here in AGENTS.md instead.
+
+**Never tell the model the deployment is offline.** It is true of the machine and
+irrelevant to the model, and saying it does active harm: the agent starts
+treating its own `s3://` paths as unreachable remote resources, second-guesses
+tool calls that work, and asks the user for credentials to a bucket it can
+already read. Every tool it has works normally. Constrain what it should ANSWER
+FROM — the catalog — rather than describing the network. The user-facing welcome
+text in `layers-input.json` is a different audience and can say whatever is true.
+
+**The object store is the local copy, not `data/bundle/`.** `make data` writes
+only the STAC and a hydration manifest; `make seed` streams the 15.6 GB of
+parquet, PMTiles and H3 hex bucket-to-bucket into rustfs. So the artifact that
+makes the box offline is the rustfs volume, and `make airgap` has to carry it —
+tarring `data/bundle` alone used to succeed and produce a box with an empty
+catalog. Hydration skips objects already present, which is also what lets an
+air-gapped restore seed with no network.
+
+**Relative URLs are not universally safe.** Browser-facing paths here are
+root-relative on purpose, but `new URL("/mcp")` THROWS — so `mcp_server_url` must
+be absolute and is built from `PUBLIC_ORIGIN` at container start. A relative value
+there produces "MCP server unreachable" while every server-side probe passes.
+Before making a URL relative, check whether anything calls `new URL()` on it.
+
+**A URL in a served file is a run-phase URL**, however documentary it looks. A
+`rel: via` provenance link in a STAC collection got rewritten by the MCP server
+into `s3://public-census`, which the agent then tried to query — and it asked the
+user for AWS credentials. Provenance now lives in a sidecar outside the catalog
+graph.
+
+**`localhost` is not a synonym for 127.0.0.1.** Servers here bind IPv4-only, and
+some images resolve `localhost` to `::1` first, so a healthcheck naming
+`localhost` fails while the service is fine. Use the literal address.
+
+**Headers leak downstream.** rustfs speaks S3 and parses any inbound
+`Authorization` header as SigV4, so a Basic credential from a proxy in front
+makes `/data/` — and only `/data/` — return 400 while everything else works.
+nginx clears it on that route. More generally: think about what the browser and
+any fronting proxy add to a request before it reaches a service that has opinions
+about headers.
+
 **Healthchecks need a binary that exists.** `maptiler/tileserver-gl` ships
 neither `curl` nor `wget`, so a curl probe pins it at `unhealthy` while it serves
 tiles perfectly — a false alarm that sends you debugging the wrong thing. It has

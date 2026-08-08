@@ -2,125 +2,124 @@
 
 ## What gets built
 
-[`data/mirror.py`](../data/mirror.py) copies four already-processed layers out of
-the `public-census` STAC catalog and re-points their hrefs at the local object
-store:
+Two phases, and the split is the point.
+
+**`make data` (online)** reads the upstream STAC and writes only what has to be
+transformed — about 80 KB:
 
 ```
 data/bundle/
-├── parquet/us-census-{blockgroups,tracts,counties,states}.parquet
-├── pmtiles/us-census-{blockgroups,tracts,counties,states}.pmtiles
-└── stac/
-    ├── catalog.json
-    └── us-census-{blockgroups,tracts,counties,states}/collection.json
+├── stac/catalog.json, stac/<id>/collection.json   hrefs re-pointed at this box
+├── stac/MIRROR-PROVENANCE.json                    what came from where
+└── HYDRATE-MANIFEST.tsv                           dest<TAB>size<TAB>src, 71 objects
 ```
 
-About 3 GB in total. Nothing is computed and **no Census API key is involved.**
+**`make seed` (online once)** executes that manifest, streaming each object
+straight from the source bucket into the box's own rustfs — 15.6 GB, stored once:
 
-**Both forms are required and they are not redundant.** The map reads tiles; the
-agent's SQL reads parquet. Tiles carry a subset of attributes at simplified
-geometry — they cannot answer an analytical question. Parquet carries full
-precision and every column but cannot be rendered. Dropping either silently
-removes half the application.
-
-This is also why `tooltip_fields` in `layers-input.json` must be checked against
-the **tile** schema, not the parquet schema. A tooltip naming a parquet-only
-column renders blank, with no error anywhere. Read the real tile fields with:
-
-```bash
-pmtiles show --metadata data/bundle/pmtiles/us-census-blockgroups.pmtiles
+```
+s3://geo-data/
+├── parquet/us-census-{blockgroups,tracts,counties,states}.parquet   1.2 GB
+├── pmtiles/us-census-{...}.pmtiles                                  1.8 GB
+├── hex/us-census-{...}/h0=*/data_0.parquet                          12  GB
+└── stac/...
 ```
 
-## Why mirroring instead of building from source
+After that the box needs no network. The objects are in its object store, and
+`make up-airgap` proves it — every backend loses its route out and the hex flow
+still runs.
 
-This used to be a from-scratch pipeline: TIGER/Line shapefiles plus ACS API
-calls, joined in DuckDB, tiled with tippecanoe, with hand-written STAC on the
-end. It produced artifacts that already existed upstream, and it cost:
+**Why not stage it on disk first.** The parquet, pmtiles and hex objects are
+byte-identical copies; only the STAC needs rewriting. Downloading 15.6 GB to
+`data/bundle/` and then uploading the same 15.6 GB into rustfs stored it twice
+and moved it twice for no gain. Hydration skips any object already present with
+the right size, which is what makes `make seed` cheap to re-run — and what makes
+an air-gapped restore work without touching the network at all.
 
-* a Census API key — and the API stopped serving anonymous queries, signalling it
-  with a `302` to an HTML page rather than an error, which surfaced as a bare
-  `JSONDecodeError`;
-* a build image with GDAL and a from-source tippecanoe compile;
-* an hour or more of tiling, plus a class of silent join bugs (vintage
-  mismatches, sentinel handling, name-vs-GEOID joins) that had to be defended
-  against individually.
+Set `STAC_ONLY=0` to materialise everything on disk instead. You want that only
+if you specifically need `data/bundle/` to be the portable artifact; the normal
+air-gap path carries the object store, see below.
 
-Mirroring removes all of it. The upstream collections are the source of truth for
-what a layer contains, and `mirror.py` only moves bytes and rewrites hrefs.
+**Carrying it to a disconnected machine.** `make airgap` saves three archives:
+images, the payload (STAC, model weights, basemap), and `objects.tar` — a dump of
+the rustfs volume. That third one is the data. `make load` restores the volume,
+and `make seed` on the target then finds all 71 objects already in place, fetches
+nothing, and only re-renders the STAC for the local `PUBLIC_ORIGIN`.
 
-The tradeoff is that the bundle now contains what upstream publishes rather than
-exactly what we might choose. Which brings us to the important one:
+A payload without `objects.tar` produces a box that starts, serves a catalog, and
+has nothing behind it — so `airgap-save.sh` refuses to run before `make seed` and
+warns if the archive comes out implausibly small.
 
-## Demographics are block-group only
+## The raster layer
 
-The `census-2024` boundary layers carry TIGER attributes and nothing else — no
-population, no income. **Every demographic column in this bundle comes from the
-ACS 2020–2024 block-group layer**, which is why that is the layer with the
-choropleth and the others are boundary context.
+`us-nlcd-2024` is a COG, not a table: Annual NLCD Land Cover 2024, 30 m, CONUS,
+1.6 GB, 203373 x 95653 px with nine overview levels. It is what TiTiler is in this
+stack for — before it, `/titiler/` proxied a service with nothing to serve.
 
-| Column | Meaning |
-|---|---|
-| `TotPop` | Total population |
-| `MHHI` | Median household income, dollars. NULL where suppressed; top-coded at 250001 |
-| `PCI` | Per-capita income, dollars |
-| `PovInd` | **Count** below the poverty threshold — not a rate |
-| `Under18`, `Senior65` | Age-group populations |
-| `NoCar` | Households with no vehicle available |
+Its STAC asset href is an **`s3://` path, not `${PUBLIC_ORIGIN}`**, and that is
+deliberate. The browser hands the href to TiTiler as `?url=`, and TiTiler resolves
+it server-side with its own S3 configuration. A public-origin URL would send
+TiTiler back out through nginx, which behind an authenticating proxy it cannot get
+through — every tile would 401 while the rest of the app worked fine.
 
-Full descriptions ship in each collection's `table:columns`, generated from the
-downloaded file itself so the documentation cannot drift from the schema. The
-agent reads them via the collection-detail tool.
+The palette is not configured here. The asset carries
+`raster:bands[0].classification:classes` — 17 classes with a value, name,
+description and `color_hint` each — and geo-agent builds the colormap and labels
+the legend from that. So `layers-input.json` only says `legend_type:
+"categorical"`, and the map shows real NLCD colours with real class names.
 
-### Rolling up to county or state
+Land cover has no attributes to join on, so it pairs with the census layers
+visually rather than in SQL: what surrounds the lowest-income block groups.
 
-People will ask for median income by county, and the honest answer is that this
-bundle cannot give a true one. Medians do not aggregate: you cannot average
-block-group medians into a county median. A population-weighted mean is the
-usual approximation and it skews high, because it weights by population rather
-than by household count and ignores the within-group distribution entirely.
+## The H3 hex assets, and why they are here
+
+Every collection has three assets: `parquet` (one row per feature — counts,
+rankings, aggregates), `pmtiles` (what the map renders), and `hex` (the same
+attributes indexed to H3 cells). The land-cover collection adds a fourth,
+`hex_fractions`.
+
+**The hex indexes exist for cross-tessellation joins, and nothing else.** A raster
+and census polygons divide space differently, so "what land cover is in this
+county" is normally a spatial operation — expensive, and beyond what a small model
+writes correctly. Index both to the same H3 cells and it collapses to a join on
+`h10`:
 
 ```sql
--- An ESTIMATE, not a median. Label it as such when reporting.
-SELECT c.NAMELSAD,
-       SUM(b.TotPop) AS pop,
-       SUM(b.MHHI * b.TotPop) / NULLIF(SUM(b.TotPop), 0) AS est_mhhi
-FROM read_parquet('s3://geo-data/parquet/us-census-blockgroups.parquet') b
-JOIN read_parquet('s3://geo-data/parquet/us-census-counties.parquet') c
-  ON c.GEOID = substr(b.GEOID, 1, 5)
-WHERE b.MHHI IS NOT NULL AND b.TotPop > 0
-GROUP BY c.NAMELSAD;
+WITH cells AS (
+  SELECT DISTINCT h10
+  FROM read_parquet('s3://geo-data/hex/us-census-blockgroups/h0=*/data_0.parquet')
+  WHERE substr(GEOID, 1, 5) = '06019'
+)
+SELECT lc.nlcd, round(100.0 * sum(lc.frac) / (SELECT count(*) FROM cells), 1) AS pct
+FROM cells c
+JOIN read_parquet('s3://geo-data/hex-fractions/us-nlcd-2024/h0=*/data_0.parquet') lc
+  ON lc.h10 = c.h10
+GROUP BY lc.nlcd ORDER BY pct DESC
 ```
 
-Counts — population, households, people below poverty — *do* sum correctly, so
-a county poverty rate computed from summed counts is sound. The system prompt
-warns the agent about exactly this distinction.
+Which returns, for Fresno County: crops 33.5%, shrub 19.6%, grassland 19.1%,
+evergreen forest 14.5% — Central Valley agriculture rising into the Sierra
+foothills. Manhattan comes back developed-high 39.5% with a third open water.
 
-GEOID is hierarchical, which is what makes the join above work: 2 characters for
-state, 5 for county, 11 for tract, 12 for block group. Join on GEOID and never
-on name — there are dozens of Washington Counties.
+The `DISTINCT h10` is load-bearing: several block groups can touch one cell, and
+joining without deduplicating counts that cell once per block group and inflates
+every percentage.
 
-## Sentinels, handled upstream
+**None of this applies to census-only questions.** Population or median income for
+a tract needs no spatial operation at all — it is already tabular along the GEOID
+hierarchy, so those queries use the plain parquet and ignore H3 entirely. That is
+the distinction worth keeping in mind before adding more hex data: it buys you
+something only when two datasets tessellate differently.
 
-The Census API encodes suppressed estimates as `-666666666`. Left alone, a median
-income of minus six hundred million does not merely look wrong — it wrecks every
-average, every choropleth break and every "lowest income" ranking while the data
-still validates.
+`hex-fractions` versus `hex`: the fractions table has one row per (cell, class)
+with `frac` summing to 1 per cell, which is what gives a composition. The `hex`
+table has one row per cell with the dominant class and is far smaller — prefer it
+for "what cover is this" rather than "what mix".
 
-The mirrored data has none: `MHHI` contains zero values below `-1000000` and uses
-proper NULLs instead (about 19,000 of 242,748 block groups). This is worth
-re-checking if you point `CENSUS_SOURCE_BASE` at a different mirror, because the
-choropleth in `layers-input.json` assumes it — it maps NULL to a "no data" class
-via `coalesce`, and a surviving sentinel would land in the lowest-income bucket
-and paint as genuine extreme poverty.
-
-## What is not mirrored
-
-The upstream collections also publish H3 hex assets (`*-hex`). They are skipped:
-state and county hex are ~270 MB together, but tract and block-group hex are
-~7 GB and ~5 GB, which would quadruple the bundle for something this deployment
-does not read — the `/tiles/` hex-pyramid route is served by mcp-data-server out
-of its own `tiles` bucket via `register_hex_tiles`. Add them to `LAYERS` in
-`mirror.py` if you want them, and update the size figures in the README.
+Sizes: census hex is ~140 MB state, ~124 MB county, 6.7 GB tract, 4.8 GB block
+group; land-cover hex is 1.09 GB and its fractions 7.05 GB. The block-group table
+is 646 million rows over 13.2 million distinct h8 cells, so aggregate against it
+and never list rows. `MIRROR_HEX=0` skips all of them.
 
 ## The `${PUBLIC_ORIGIN}` placeholder
 

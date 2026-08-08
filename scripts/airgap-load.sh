@@ -39,6 +39,23 @@ echo "==> restoring payload"
 cd ..
 $DECOMP "$INDIR/payload.tar.$EXT" | tar -x
 
+# ── The object store ─────────────────────────────────────────────────────────
+# Restored into the volume rather than re-uploaded, so no network is needed and
+# `make seed` on this machine finds every object already present.
+if [ -f "$INDIR/objects.tar.$EXT" ]; then
+    VOLUME="glen-in-a-box_rustfs-data"
+    echo "==> restoring object store → volume $VOLUME"
+    docker volume create "$VOLUME" >/dev/null
+    $DECOMP "$INDIR/objects.tar.$EXT" \
+        | docker run --rm -i -v "$VOLUME":/v alpine:3 tar -xf - -C /v
+else
+    echo "" >&2
+    echo "warning: no objects.tar.$EXT in $INDIR/." >&2
+    echo "         This payload carries no data objects. The app will start and" >&2
+    echo "         show an empty catalog. Re-save from a machine where" >&2
+    echo "         'make seed' has completed." >&2
+fi
+
 # cwd is the repo root by now (the cd .. above), so the test has to name the
 # same path as the cat — an earlier version tested ./MANIFEST.txt and silently
 # never printed the manifest it had just been handed.

@@ -84,6 +84,17 @@ echo "==> rendering STAC catalog for PUBLIC_ORIGIN=$PUBLIC_ORIGIN"
 STAGE=$(mktemp -d)
 cp -r "$BUNDLE/." "$STAGE/"
 
+# Keep the files that record upstream URLs out of the served bucket. Neither is
+# reachable from the catalog, so neither reaches the agent — but the bucket is
+# what an offline box serves, and an external URL has no business in it. They
+# stay on disk in data/bundle for whoever needs to know what to re-mirror.
+rm -f "$STAGE"/HYDRATE-MANIFEST.* "$STAGE/stac/MIRROR-PROVENANCE.json"
+
+# The data directories are handled object-by-object by the hydration step below,
+# which skips what is already in place. Leaving them here too would re-upload
+# every byte on every seed.
+rm -rf "$STAGE/parquet" "$STAGE/pmtiles" "$STAGE/hex"
+
 rendered=0
 while IFS= read -r f; do
     if grep -q '${PUBLIC_ORIGIN}' "$f"; then
@@ -117,9 +128,77 @@ if grep -rq '${PUBLIC_ORIGIN}' "$STAGE"; then
     exit 1
 fi
 
-# ── Upload ───────────────────────────────────────────────────────────────────
-echo "==> uploading bundle to s3://geo-data"
-rc mirror --overwrite --remove "$STAGE" "$ALIAS/geo-data"
+# ── Hydrate the data objects ─────────────────────────────────────────────────
+# The parquet/pmtiles/hex objects are byte-identical copies of an upstream
+# catalog, so they are streamed straight into this bucket rather than staged on
+# local disk first — 15 GB written once instead of downloaded, stored, and
+# uploaded again. data/mirror.py writes the plan; the source URLs live only in
+# that file and never in the STAC, because anything reachable from the catalog
+# ends up in the agent's context.
+#
+# Objects already present with the right size are skipped, which is what makes
+# this safe to re-run AND what makes an air-gapped restore work: with the rustfs
+# volume restored from a payload, every object is already there, nothing is
+# fetched, and no network is touched.
+MANIFEST="$BUNDLE/HYDRATE-MANIFEST.tsv"
+if [ -f "$MANIFEST" ]; then
+    echo "==> hydrating data objects into s3://geo-data"
+    have=0; got=0; missing=0
+    OLDIFS="$IFS"; IFS="$(printf '\t')"
+    while read -r dest size src || [ -n "${dest:-}" ]; do
+        case "$dest" in ''|'#'*) continue ;; esac
+        [ -n "${src:-}" ] || continue
+
+        actual=$(rc object stat --json "$ALIAS/geo-data/$dest" 2>/dev/null \
+                 | sed -n 's/.*"size_bytes"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+        if [ -n "$actual" ] && [ "$actual" = "$size" ]; then
+            have=$((have + 1))
+            continue
+        fi
+
+        printf '    %-58s %s MB ' "$dest" "$((size / 1000000))"
+
+        # Prefer a local copy when there is one. That covers two cases with one
+        # branch: a bundle materialised with STAC_ONLY=0, and an air-gapped
+        # machine where the files travelled on disk. Only fall back to the
+        # network when neither the bucket nor the disk already has the object.
+        if [ -f "$BUNDLE/$dest" ]; then
+            if rc cp "$BUNDLE/$dest" "$ALIAS/geo-data/$dest" >/dev/null 2>&1; then
+                echo "from disk"
+                got=$((got + 1))
+            else
+                echo "FAILED (local copy)"
+                missing=$((missing + 1))
+            fi
+        elif wget -q -O - "$src" | rc pipe "$ALIAS/geo-data/$dest" >/dev/null 2>&1; then
+            echo "copied"
+            got=$((got + 1))
+        else
+            echo "FAILED"
+            missing=$((missing + 1))
+        fi
+    done <<EOF
+$(cat "$MANIFEST")
+EOF
+    IFS="$OLDIFS"
+    echo "    $have already present, $got copied, $missing failed"
+
+    if [ "$missing" -ne 0 ]; then
+        echo "" >&2
+        echo "seed: $missing object(s) could not be fetched." >&2
+        echo "      If this machine is offline, the payload it was restored from" >&2
+        echo "      did not include them — a bundle built with STAC_ONLY=1 keeps" >&2
+        echo "      the objects in the rustfs volume, so that volume has to travel" >&2
+        echo "      with it. See scripts/airgap-save.sh." >&2
+        exit 1
+    fi
+fi
+
+# ── Upload the STAC ──────────────────────────────────────────────────────────
+# --remove is deliberately NOT used: the data objects hydrated above are not in
+# $STAGE, and mirroring with --remove would delete every one of them.
+echo "==> uploading STAC to s3://geo-data"
+rc mirror --overwrite "$STAGE" "$ALIAS/geo-data"
 
 rm -rf "$STAGE"
 

@@ -14,7 +14,14 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
 [ -f .env ] && { set -a; . ./.env; set +a; }
 
-ORIGIN="${PUBLIC_ORIGIN:-http://localhost:8080}"
+# What to probe. Defaults to the public origin, which is what a browser uses.
+# Override it to check the stack from somewhere else — notably from inside the
+# compose network, where `make up-airgap` leaves no published port to hit:
+#     VERIFY_TARGET=http://webapp scripts/verify.sh
+# The catalog-origin check below still compares hrefs against PUBLIC_ORIGIN,
+# because that is what the browser will have to resolve either way.
+ORIGIN="${VERIFY_TARGET:-${PUBLIC_ORIGIN:-http://localhost:8080}}"
+EXPECTED_ORIGIN="${PUBLIC_ORIGIN:-http://localhost:8080}"
 ONLY="${1:-all}"
 
 pass=0
@@ -81,6 +88,7 @@ if [ "$ONLY" = "all" ]; then
     probe "tracts collection"     "$ORIGIN/data/geo-data/stac/us-census-tracts/collection.json" 200
     probe "counties collection"   "$ORIGIN/data/geo-data/stac/us-census-counties/collection.json" 200
     probe "states collection"     "$ORIGIN/data/geo-data/stac/us-census-states/collection.json" 200
+    probe "nlcd collection"       "$ORIGIN/data/geo-data/stac/us-nlcd-2024/collection.json" 200
     # Range-limited on purpose. This is a header check, and PMTiles archives run
     # to hundreds of MB — fetching the whole thing to prove the first bytes
     # exist makes `make verify` slower than everything else combined. It also
@@ -92,20 +100,50 @@ if [ "$ONLY" = "all" ]; then
     # the opening map blank rather than merely sparse.
     probe "blockgroups pmtiles"   "$ORIGIN/data/geo-data/pmtiles/us-census-blockgroups.pmtiles" \
           100 "" -r 0-16383
+    # One H3 partition from each side of the cross-tessellation join. Without both
+    # hydrated, "land cover of this county" fails and nothing else does.
+    probe "census hex partition"   "$ORIGIN/data/geo-data/hex/us-census-counties/h0=577164439745200127/data_0.parquet" \
+          100 "" -r 0-16383
+    probe "landcover hex partition" "$ORIGIN/data/geo-data/hex-fractions/us-nlcd-2024/h0=577164439745200127/data_0.parquet" \
+          100 "" -r 0-16383
 
     # The catalog is the one place a PUBLIC_ORIGIN mismatch shows up as data
     # rather than as a failed request, so check it directly.
+    # Server-side probes cannot catch a config value the BROWSER chokes on. This
+    # one is specific and has bitten: mcp_server_url must be absolute, because
+    # the MCP client does `new URL(url)` with no base and `new URL("/mcp")`
+    # throws — the agent then reports the MCP server unreachable while every
+    # check above passes and the server is entirely healthy.
+    echo ""
+    echo "  browser-side config"
+    cfg=$(curl -s --max-time 20 "$ORIGIN/config.json")
+    mcp_cfg=$(sed -n 's/.*"mcp_server_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$cfg")
+    case "$mcp_cfg" in
+        http://*|https://*)
+            printf '  ✓ %-38s %s\n' "mcp_server_url is absolute" "$mcp_cfg"
+            pass=$((pass + 1)) ;;
+        "")
+            printf '  ✗ %-38s missing from config.json\n' "mcp_server_url"
+            fail=$((fail + 1)) ;;
+        *)
+            printf '  ✗ %-38s %s\n' "mcp_server_url is not absolute" "$mcp_cfg"
+            printf '      new URL("%s") throws in the browser, so the MCP\n' "$mcp_cfg"
+            printf '      transport is never constructed and the agent reports the\n'
+            printf '      server unreachable. It must include a scheme and host.\n'
+            fail=$((fail + 1)) ;;
+    esac
+
     echo ""
     echo "  catalog origin"
     catalog=$(curl -s --max-time 20 "$ORIGIN/data/geo-data/stac/catalog.json")
     if grep -q '${PUBLIC_ORIGIN}' <<<"$catalog"; then
         printf '  ✗ %-38s unsubstituted placeholder — re-run: make seed\n' "hrefs rendered"
         fail=$((fail + 1))
-    elif grep -q "$ORIGIN" <<<"$catalog"; then
-        printf '  ✓ %-38s hrefs match %s\n' "hrefs rendered" "$ORIGIN"
+    elif grep -q "$EXPECTED_ORIGIN" <<<"$catalog"; then
+        printf '  ✓ %-38s hrefs match %s\n' "hrefs rendered" "$EXPECTED_ORIGIN"
         pass=$((pass + 1))
     else
-        printf '  ✗ %-38s hrefs do NOT contain %s\n' "hrefs rendered" "$ORIGIN"
+        printf '  ✗ %-38s hrefs do NOT contain %s\n' "hrefs rendered" "$EXPECTED_ORIGIN"
         printf '      The bundle was seeded with a different PUBLIC_ORIGIN.\n'
         printf '      Fix PUBLIC_ORIGIN in .env and re-run: make seed\n'
         fail=$((fail + 1))
@@ -118,6 +156,14 @@ if [ "$ONLY" = "all" ]; then
     # accept text/event-stream"), so a healthy server looks broken.
     probe "MCP health"            "$ORIGIN/mcp-health" 1
     probe "TiTiler"               "$ORIGIN/titiler/healthz" 1
+    # TiTiler reading the COG out of the box's own object store, and rendering it.
+    # /healthz only proves the process is up; this proves GDAL can resolve an
+    # s3:// href against rustfs, which is the part that breaks. A tile this size
+    # is real land cover — a failure here comes back as a few hundred bytes.
+    cog=$(printf 's3%%3A%%2F%%2Fgeo-data%%2Fcog%%2Fnlcd-2024.tif')
+    probe "COG info (titiler reads s3://)" "$ORIGIN/titiler/cog/info?url=$cog" 200
+    probe "COG tile rendered"      "$ORIGIN/titiler/cog/tiles/WebMercatorQuad/6/16/23.png?url=$cog&colormap_name=tab20" \
+          5000 "image/png"
 
     # /healthz proves the process is up; it does not prove the MCP transport
     # works through nginx, which is a separate failure (buffering, upgrade
@@ -141,7 +187,12 @@ if [ "$ONLY" = "all" ]; then
 
     echo ""
     echo "  LLM"
-    models=$(curl -s --max-time 30 "$ORIGIN/api/llm/models")
+    # When LLM_API_KEY is set, /api/llm/ requires it — the app sends it as a
+    # bearer token on every request, and so must this probe.
+    llm_auth=()
+    [ -n "${LLM_API_KEY:-}" ] && [ "${LLM_API_KEY}" != "local" ] && \
+        llm_auth=(-H "Authorization: Bearer ${LLM_API_KEY}")
+    models=$(curl -s --max-time 30 "${llm_auth[@]}" "$ORIGIN/api/llm/models")
     if grep -q '"id"' <<<"$models"; then
         printf '  ✓ %-38s %s\n' "model loaded" "$(grep -o '"id":"[^"]*"' <<<"$models" | head -1)"
         pass=$((pass + 1))

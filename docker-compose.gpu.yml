@@ -1,0 +1,58 @@
+# GPU overlay for the local LLM.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   (or: make up-gpu)
+#
+# On CPU the 8B model runs at roughly 5-15 tokens/second, which is usable for one
+# person and painful for a demo. Offloaded to a GPU it feels instant.
+#
+# ── Why an overlay and not a compose profile ─────────────────────────────────
+# The obvious shape is a second `llm-gpu` service under `profiles: ["gpu"]`, and
+# it does not work: the default `llm` service has no profile, so it starts
+# regardless and you get two model servers fighting over port 8080 and 10 GB of
+# weights. Profiles add services; they cannot replace one. An overlay patches the
+# existing service in place, which is what is actually wanted here — and matches
+# how docker-compose.airgap.yml already works.
+#
+# ── Choosing a device ────────────────────────────────────────────────────────
+# `device_ids` rather than `count: all`, because a workstation's GPUs are usually
+# not all idle. Set GPU_DEVICE_ID to pick one; check what is free first with
+#     nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
+# Taking a card that is already hosting someone's training run will either OOM
+# this container or slow theirs to a crawl.
+
+services:
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    command: >
+      --model /models/${LLM_MODEL_FILE:-Qwen3-8B-Q4_K_M.gguf}
+      --alias ${LLM_MODEL_ID:-qwen3-8b}
+      --host 0.0.0.0 --port 8080
+      --jinja
+      --ctx-size ${LLM_CTX:-32768}
+      --parallel 1
+      --threads ${LLM_THREADS:-8}
+      --cache-type-k q8_0 --cache-type-v q8_0
+      --n-gpu-layers ${LLM_GPU_LAYERS:-99}
+    # --jinja is still mandatory here. Without it llama.cpp emits no tool_calls
+    # and the agent silently degrades to a chatbot that cannot query or draw.
+    # --n-gpu-layers 99 means "all of them"; an 8B Q4_K_M needs about 6 GB.
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${GPU_DEVICE_ID:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      # Weights load from disk to VRAM in well under a minute, so the long CPU
+      # start_period is not needed — but keep it generous enough that a cold page
+      # cache on a 5 GB file does not trip it.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s

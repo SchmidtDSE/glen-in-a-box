@@ -4,6 +4,24 @@ Start with `make verify` — it probes every service through the public origin,
 which is the path the browser takes, and most entries below are things it will
 name directly.
 
+## `make up-airgap` publishes no port
+
+That is deliberate, not a bug. `internal: true` stops published ports from
+working, so there is no way in from the host — which is why the probes have to run
+from inside:
+
+```bash
+make up-airgap
+make verify-airgap
+```
+
+Giving webapp a second, non-internal network to carry the port looks like the fix
+and is not: with one network internal, docker's embedded DNS forwards service
+names to a resolver it cannot reach and answers SERVFAIL, so every proxied route
+502s. Compose accepts a per-network `priority` to break the tie and this Docker
+leaves `GwPriority` at 0 regardless, which is why that appeared to work once and
+then stopped.
+
 ## Nothing responds on port 8080 at all
 
 Check whether nginx is even running:
@@ -21,6 +39,33 @@ served nothing at all. Every `proxy_pass` now goes through a variable plus an
 explicit `resolver`, which defers resolution to request time: a missing service
 costs a 502 on its own route and nothing else. If you see this error after
 editing `nginx.conf.template`, a literal hostname crept back in.
+
+## Services are healthy but cannot reach each other
+
+Symptom: every container reports healthy, the app serves static files, and every
+proxied route 502s or times out. Healthchecks do not catch this because each one
+probes its own process on 127.0.0.1.
+
+Test it directly:
+
+```bash
+docker compose exec -T webapp sh -c 'wget -qO- http://rustfs:9000/health'
+```
+
+If the name resolves but the connection hangs, the compose bridge exists without
+working forwarding. Recreating the network fixes it:
+
+```bash
+docker compose down
+docker network rm glen-in-a-box_glen
+docker compose up -d
+```
+
+Observed on a host that also runs k3s, and it correlates with *switching between
+overlay sets* — `up` then `up-airgap` then `up` again — because each switch makes
+compose tear down and recreate the network. Counting iptables FORWARD rules for
+the bridge is not a useful diagnostic on Docker 29 (a working network shows none;
+it is not using that chain). Try to settle on one overlay set for a session.
 
 ## `make seed` succeeds but the agent says it has no datasets
 
@@ -54,6 +99,17 @@ If it reports a missing asset key, the upstream collection changed shape — upd
 There is no Census API key involved; if you find one referenced anywhere, it is
 left over from the old from-scratch pipeline. See [data.md](data.md).
 
+## A container reports unhealthy while working perfectly
+
+Check what the healthcheck actually probes. Every healthcheck in this stack uses
+a literal `127.0.0.1` rather than `localhost`, because these servers bind
+`0.0.0.0` (IPv4 only) and in some images `localhost` resolves to `::1` first —
+the probe is then refused while the service answers every real request. It
+depends on the image's `/etc/hosts`, so it can appear after an unrelated rebuild.
+
+The other variant is a probe using a binary the image does not ship: `curl` is
+absent from `maptiler/tileserver-gl` and from `mcp-data-server`.
+
 ## A variable in `.env` seems to be ignored
 
 `.env` is read two ways: docker compose parses it itself, and the shell scripts
@@ -70,6 +126,55 @@ Check what actually survives with:
 ```bash
 bash -c 'set -a; . ./.env; set +a; env | sort'
 ```
+
+## The agent says the MCP server is unreachable, but every probe passes
+
+Check that `config.json` gives an **absolute** `mcp_server_url`:
+
+```bash
+curl -s http://localhost:8080/config.json | grep mcp_server_url
+```
+
+The MCP client does `new URL(url)` with no base, and `new URL("/mcp")` throws.
+The transport is never constructed, the error is swallowed, and the agent reports
+the server unreachable — while the server is perfectly healthy and every
+server-side check passes, because none of them exercises the browser's URL
+construction. Everything else browser-facing in this deployment is deliberately a
+relative path; this one value cannot be, so it is built from `PUBLIC_ORIGIN` at
+container start. `make verify` now asserts it.
+
+If it is absolute and the agent still cannot connect, look for a 401 on `/mcp` in
+the nginx access log — a proxy in front may be rejecting it.
+
+## Only the /data/ route fails, with 400 InvalidRequest
+
+```
+<Error><Code>InvalidRequest</Code><Message>invalid header: authorization</Message></Error>
+```
+
+An `Authorization` header reached the object store. rustfs speaks S3, so it tries
+to parse any such header as AWS SigV4 and rejects a Basic one — while the app
+shell, the LLM, the MCP server and the basemap all keep working. It reads as "the
+data bundle is broken" and is nothing of the kind.
+
+This appears the moment the box sits behind a reverse proxy doing basic auth, or
+a browser replays credentials on same-origin requests. `nginx.conf.template`
+clears the header on the `/data/` route for exactly this reason; if you are
+adding an authenticating proxy, also strip it there (Traefik's basicAuth has
+`removeHeader: true`). These objects are anonymously readable by design, so no
+credential belongs on that route at all.
+
+## Deploying behind a reverse proxy
+
+Set `PUBLIC_ORIGIN` to the externally visible URL — scheme included — and re-run
+`make seed`, since it is baked into the STAC hrefs. Then set `PUBLIC_BIND` to the
+address the proxy reaches this box on, rather than leaving the port on `0.0.0.0`:
+otherwise the proxy asks for a password and a direct hit on `http://<host>:8080`
+does not, which makes the authentication decorative.
+
+The proxy also needs generous timeouts. A tool-calling turn can run for minutes,
+and nginx here uses 600s to match geo-agent's own client timeout; a proxy with a
+30s default becomes the weak link and the UI looks hung.
 
 ## The map loads but no layers appear
 

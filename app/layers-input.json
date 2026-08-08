@@ -68,12 +68,12 @@
         "carbon": false
     },
     "welcome": {
-        "message": "This is a fully offline copy of the US census explorer — the map, the database, and the language model all run on this machine, with no internet connection. Demographics are ACS 2020–2024 five-year estimates at block-group level. Try asking:",
+        "message": "This is a fully offline copy of the US census explorer — the map, the database, and the language model all run on this machine, with no internet connection. Demographics are ACS 2020–2024 five-year estimates at block-group level. A local 8B model answers these, so give it a moment; simple, specific questions work best. Try asking:",
         "examples": [
-            "Which block groups in San Francisco have the lowest median household income?",
-            "Show me block groups where more than a third of people are below the poverty line.",
-            "Summarise median household income by county for California.",
-            "Where are the block groups with the most households that have no vehicle?"
+            "What land cover surrounds the lowest-income block groups in Fresno County?",
+            "Show the 10 block groups with the highest median household income in California.",
+            "Colour the map by per-capita income.",
+            "How many block groups have no median household income reported?"
         ]
     },
     "collections": [
@@ -226,6 +226,20 @@
                         "STUSPS",
                         "GEOID"
                     ]
+                }
+            ]
+        },
+        {
+            "collection_id": "us-nlcd-2024",
+            "collection_url": "/data/geo-data/stac/us-nlcd-2024/collection.json",
+            "group": "Land cover",
+            "assets": [
+                {
+                    "id": "cog",
+                    "display_name": "Land cover (NLCD 2024)",
+                    "visible": false,
+                    "legend_type": "categorical",
+                    "opacity": 0.75
                 }
             ]
         }
