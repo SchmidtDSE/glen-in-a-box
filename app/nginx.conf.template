@@ -32,10 +32,16 @@ server {
     #
     # Passing the upstream in a variable defers resolution to request time, so a
     # missing service costs a 502 on its own route and nothing else. It requires
-    # docker's embedded DNS to be named explicitly, and it disables the implicit
-    # prefix-stripping that proxy_pass normally does — hence the explicit
-    # `rewrite ... break` in each location that needs its path changed.
-    resolver 127.0.0.11 valid=10s ipv6=off;
+    # the container runtime's embedded DNS to be named explicitly, and it
+    # disables the implicit prefix-stripping that proxy_pass normally does —
+    # hence the explicit `rewrite ... break` in each location that needs its
+    # path changed.
+    #
+    # The address is filled in by entrypoint.sh from this container's own
+    # resolv.conf rather than hardcoded, because it is runtime-specific: Docker
+    # answers on 127.0.0.11, podman's aardvark-dns answers on the network
+    # gateway instead. See the entrypoint for what the wrong value looks like.
+    resolver ${DNS_RESOLVER} valid=10s ipv6=off;
 
     # No Access-Control-Allow-Origin anywhere in this file, by design. Every
     # request the browser makes is same-origin; a permissive CORS header would

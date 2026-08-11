@@ -56,17 +56,24 @@ services:
       # Leave empty for a laptop. Set it to a secret for anything reachable from
       # elsewhere — it is the only guard on /api/llm/. See app/entrypoint.sh.
       LLM_API_KEY: ${LLM_API_KEY:-local}
+      # Normally left empty: the entrypoint reads the right address out of the
+      # container's own resolv.conf, which both Docker and podman populate. Set it
+      # only if that heuristic picks the wrong nameserver — e.g. a runtime that
+      # lists a host resolver first.
+      DNS_RESOLVER: ${DNS_RESOLVER:-}
     depends_on:
       rustfs:
         condition: service_healthy
     healthcheck:
-      # 127.0.0.1, never `localhost`. These servers bind 0.0.0.0 (IPv4 only),
-      # and in some images `localhost` resolves to ::1 first — the probe is then
-      # refused while the service answers every real request perfectly, pinning
-      # the container at "unhealthy" for a reason nothing in the logs explains.
-      # It depends on the image's /etc/hosts, so it appears and disappears
-      # between rebuilds. All the healthchecks below use a literal address for
-      # the same reason.
+      # 127.0.0.1, never `localhost`. These servers bind 0.0.0.0 — IPv4 only —
+      # and some images map `localhost` to ::1 as well, or first. busybox wget
+      # tries ::1, gets connection refused, and the front door sits at
+      # "unhealthy" while serving every request perfectly. curl-based probes hide
+      # this by falling back to the other address family; wget does not.
+      #
+      # It depends on the image's /etc/hosts, so it comes and goes: Docker writes
+      # no `::1 localhost` line, podman does. Every healthcheck below uses a
+      # literal address for the same reason.
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
@@ -206,8 +213,15 @@ services:
       rustfs:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5)"]
+      # python, not curl: this image ships no curl. CMD-SHELL, not CMD, because
+      # the probe argument contains spaces and podman re-splits exec-form
+      # healthcheck arrays on whitespace (observed on podman 4.9.3 with Compose
+      # v2.32.4) — python then receives just `import`, dies with a SyntaxError,
+      # and a perfectly healthy container sits at "unhealthy" forever. Docker
+      # keeps the array intact, so it only shows up on podman, and only for
+      # probes whose arguments contain spaces. CMD-SHELL passes one string and is
+      # safe on both; keep any future probe here a single shell string.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)\""]
       interval: 30s
       timeout: 10s
       retries: 3
