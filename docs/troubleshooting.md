@@ -40,6 +40,43 @@ explicit `resolver`, which defers resolution to request time: a missing service
 costs a 502 on its own route and nothing else. If you see this error after
 editing `nginx.conf.template`, a literal hostname crept back in.
 
+## Running on podman
+
+The stack works on rootless podman, and two of its behaviours differ from Docker
+in ways the repo now accommodates — both confirmed by testing, not assumed:
+
+* **The embedded DNS is at the network gateway** (`10.89.0.1`), not `127.0.0.11`.
+  `entrypoint.sh` reads it from the container's own `resolv.conf`, so nothing is
+  hardcoded. With the old hardcoded address, `/data/` returned nothing at all;
+  with the derived one it returns 200.
+* **Exec-form healthcheck arrays are re-split on whitespace.** A probe written as
+  `["CMD","python","-c","import x; ..."]` is stored as
+  `["CMD","python","-c","import","x; ..."]`, python receives just `import`, and
+  the container reports `unhealthy` forever. Confirmed on podman 3.4.4: the
+  exec-form probe exits 1 and `CMD-SHELL` exits 0. Use `CMD-SHELL` with one
+  string for any probe whose arguments contain spaces.
+
+On **Ubuntu 22.04 specifically**, podman 3.4.4 cannot create a working network out
+of the box, and this is not a fault of this project: podman writes
+`"cniVersion": "1.0.0"` into the network's conflist while the packaged CNI
+plugins are 0.9.1, which reject it. Containers then fail to start with
+
+```
+CNI network "<name>_default" not found
+Error validating CNI config file ...: [plugin firewall does not support config version "1.0.0"]
+```
+
+Either upgrade podman to 4.x (netavark), or patch the version in the generated
+conflist, which is a user-level file:
+
+```bash
+sed -i 's/"cniVersion": "1.0.0"/"cniVersion": "0.4.0"/' \
+    ~/.config/cni/net.d/<network>.conflist
+```
+
+Point `docker compose` at podman with
+`export DOCKER_HOST="unix:///run/user/$(id -u)/podman/podman.sock"`.
+
 ## The app shell loads but every proxied route returns 000
 
 Distinctive signature: `make verify` passes the whole `app shell` section and then

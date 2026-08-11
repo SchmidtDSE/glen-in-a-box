@@ -66,14 +66,16 @@ services:
         condition: service_healthy
     healthcheck:
       # 127.0.0.1, never `localhost`. These servers bind 0.0.0.0 — IPv4 only —
-      # and some images map `localhost` to ::1 as well, or first. busybox wget
-      # tries ::1, gets connection refused, and the front door sits at
-      # "unhealthy" while serving every request perfectly. curl-based probes hide
-      # this by falling back to the other address family; wget does not.
+      # while both Docker and podman map `localhost` to ::1 as well as 127.0.0.1.
+      # A client that tries ::1 and does not fall back gets connection refused,
+      # and the front door then sits at "unhealthy" while serving every request
+      # perfectly. curl falls back to the other address family; busybox wget has
+      # been seen not to.
       #
-      # It depends on the image's /etc/hosts, so it comes and goes: Docker writes
-      # no `::1 localhost` line, podman does. Every healthcheck below uses a
-      # literal address for the same reason.
+      # Whether it bites depends on the image's resolver and /etc/hosts, so it
+      # comes and goes between rebuilds and between runtimes — which is reason
+      # enough to name the address literally rather than depend on it. Every
+      # healthcheck below does.
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
