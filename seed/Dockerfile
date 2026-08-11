@@ -20,7 +20,10 @@
 # are simply there. entrypoint.sh asserts them anyway — see its header.
 #
 # Pinned, not :latest, so a rebuild years from now produces the same seeder.
-FROM rustfs/rc:v0.1.31
+# Fully qualified: podman resolves short names only for official images unless the
+# host configures unqualified-search-registries, and `rustfs/rc` is not one. Docker
+# treats the docker.io/ prefix as a no-op.
+FROM docker.io/rustfs/rc:v0.1.31
 
 COPY entrypoint.sh /entrypoint.sh
 

@@ -148,6 +148,11 @@ into `s3://public-census`, which the agent then tried to query — and it asked 
 user for AWS credentials. Provenance now lives in a sidecar outside the catalog
 graph.
 
+**Fully qualify non-official image names.** podman resolves short names only for
+official images unless the host configures `unqualified-search-registries`, so
+`rustfs/rustfs` and `maptiler/tileserver-gl` fail to pull there. The `docker.io/`
+prefix is a no-op on Docker.
+
 **The embedded DNS address is runtime-specific.** nginx's request-time `resolver`
 has to name it, and Docker answers on 127.0.0.11 while podman's aardvark-dns
 answers on the network gateway. Hardcoding either one breaks the other in the

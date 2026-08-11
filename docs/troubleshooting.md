@@ -56,6 +56,19 @@ in ways the repo now accommodates — both confirmed by testing, not assumed:
   exec-form probe exits 1 and `CMD-SHELL` exits 0. Use `CMD-SHELL` with one
   string for any probe whose arguments contain spaces.
 
+**`make up-airgap` does not work on podman 3.4.4.** Egress is blocked correctly —
+the security property holds — but podman omits the `dnsname` plugin from an
+`internal: true` network, so container-name resolution disappears entirely:
+`/etc/resolv.conf` falls back to the *host's* nameservers and `getent hosts mcp`
+fails. No `resolver` setting can fix that, because there is nothing answering for
+service names; injecting `dnsname` into the generated conflist by hand does not
+help either, as podman does not start it for internal networks. Run the air-gap
+check on Docker, or on podman 4.x with netavark (untested here).
+
+Everything else works: **30/30 checks pass on rootless podman 3.4.4**, all five
+defined healthchecks report healthy with zero restarts (titiler defines none), and
+the COG and H3 hex probes pass.
+
 On **Ubuntu 22.04 specifically**, podman 3.4.4 cannot create a working network out
 of the box, and this is not a fault of this project: podman writes
 `"cniVersion": "1.0.0"` into the network's conflist while the packaged CNI
@@ -75,7 +88,15 @@ sed -i 's/"cniVersion": "1.0.0"/"cniVersion": "0.4.0"/' \
 ```
 
 Point `docker compose` at podman with
-`export DOCKER_HOST="unix:///run/user/$(id -u)/podman/podman.sock"`.
+`export DOCKER_HOST="unix:///run/user/$(id -u)/podman/podman.sock"`. Note that
+`docker compose build` fails against the podman socket at the "sending tarball"
+stage; build with `podman build -t glen-in-a-box/webapp:local ./app` instead
+(podman tags it `localhost/...`, which compose still resolves).
+
+Image names in this repo are fully qualified (`docker.io/rustfs/rustfs:latest`)
+because podman resolves short names only for official images unless the host
+defines `unqualified-search-registries` — otherwise the pull fails with
+`short-name "rustfs/rustfs:latest" did not resolve to an alias`.
 
 ## The app shell loads but every proxied route returns 000
 

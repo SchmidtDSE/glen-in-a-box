@@ -24,6 +24,10 @@
 # built by register_hex_tiles, and it advertises those URLs to the browser
 # using MCP_PUBLIC_BASE_URL. TiTiler therefore cannot own /tiles/.
 
+# Image names are fully qualified. podman resolves short names only for official
+# images unless the host defines unqualified-search-registries, so `rustfs/rustfs`
+# and `maptiler/tileserver-gl` fail to pull there with "short-name did not resolve
+# to an alias". The docker.io/ prefix is a no-op on Docker.
 name: glen-in-a-box
 
 x-restart: &restart
@@ -123,7 +127,7 @@ services:
   #   tiles    — credentialed read/write, for register_hex_tiles output.
   rustfs:
     <<: *restart
-    image: rustfs/rustfs:latest
+    image: docker.io/rustfs/rustfs:latest
     environment:
       RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-glenadmin}
       RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-glenadmin-change-me}
@@ -266,7 +270,7 @@ services:
   # geo-agent snapshot can point both at /basemap/.
   basemap:
     <<: *restart
-    image: maptiler/tileserver-gl:latest
+    image: docker.io/maptiler/tileserver-gl:latest
     command: ["--config", "/config/config.json", "--port", "8080", "--verbose"]
     volumes:
       - ./basemap/config:/config:ro
