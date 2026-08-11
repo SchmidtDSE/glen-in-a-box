@@ -28,7 +28,11 @@ cd "$(dirname "$0")"
 #
 # Override with PROTOMAPS_BUILD=YYYYMMDD, or point PROTOMAPS_URL at your own
 # mirror if you need a genuinely durable pin.
-PROTOMAPS_BUILD="${PROTOMAPS_BUILD:-20260801}"
+#
+# This one was current and verified on 2026-08-11 (a full US extract built from
+# it). Expect it to 404 within weeks — that is the retention window, not a
+# mistake, and the check below will tell you so rather than failing obscurely.
+PROTOMAPS_BUILD="${PROTOMAPS_BUILD:-20260810}"
 PROTOMAPS_URL="${PROTOMAPS_URL:-https://build.protomaps.com/${PROTOMAPS_BUILD}.pmtiles}"
 
 # US including Alaska and Hawaii. Alaska crosses the antimeridian, so the west
