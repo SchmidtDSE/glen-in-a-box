@@ -31,7 +31,7 @@ RUN sh ./vendor/bundle-mcp-sdk.sh "${MCP_SDK_VERSION}" /out/vendor/mcp
 # geo-agent itself. Normally loaded from jsDelivr at runtime; here it is baked
 # in at a pinned tag. --depth 1 against a tag keeps this to a few hundred KB.
 ARG GEO_AGENT_REF=v3.25.0
-ARG GEO_AGENT_REPO=https://github.com/boettiger-lab/geo-agent.git
+ARG GEO_AGENT_REPO=https://github.com/SchmidtDSE/glen.git
 RUN git clone --depth 1 --branch "${GEO_AGENT_REF}" "${GEO_AGENT_REPO}" /tmp/geo-agent \
     && mkdir -p /out/app \
     && cp -r /tmp/geo-agent/app/. /out/app/ \

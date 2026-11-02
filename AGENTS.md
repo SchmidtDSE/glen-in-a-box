@@ -16,7 +16,7 @@ Before adding any URL to any file, ask which phase it runs in. If the answer is
 
 | Repo | Role |
 |---|---|
-| [geo-agent](https://github.com/boettiger-lab/geo-agent) | Core library. Snapshotted into the webapp image at `GEO_AGENT_REF`, then patched. Never modified here. |
+| [geo-agent](https://github.com/SchmidtDSE/glen) | Core library. Snapshotted into the webapp image at `GEO_AGENT_REF`, then patched. Never modified here. |
 | [mcp-data-server](https://github.com/boettiger-lab/mcp-data-server) | SQL + STAC backend. Used as a published image (pin `MCP_TAG` to a version tag — `latest` has shipped broken), configured by env only. |
 | [geo-agent-template](https://github.com/boettiger-lab/geo-agent-template) | The online template this is the offline sibling of. |
 

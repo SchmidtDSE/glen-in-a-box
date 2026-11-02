@@ -1,6 +1,6 @@
 # glen-in-a-box
 
-A complete [geo-agent](https://github.com/boettiger-lab/geo-agent) deployment
+A complete [geo-agent](https://github.com/SchmidtDSE/glen) deployment
 that runs with the network cable unplugged. Ask questions about US census data
 in plain language, get SQL answers and styled map layers back — with the
 language model, the database, the tile server, the object store and every
@@ -256,8 +256,8 @@ single-user box or a closed network, and not one for anything wider.
 - [basemap/README.md](basemap/README.md) — the offline basemap
 - [AGENTS.md](AGENTS.md) — orientation for AI coding agents working in this repo
 
-Upstream: [geo-agent](https://github.com/boettiger-lab/geo-agent) ·
-[docs](https://boettiger-lab.github.io/geo-agent/) ·
+Upstream: [geo-agent](https://github.com/SchmidtDSE/glen) ·
+[docs](https://schmidtdse.github.io/glen/) ·
 [mcp-data-server](https://github.com/boettiger-lab/mcp-data-server)
 
 ---
