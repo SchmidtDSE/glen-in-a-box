@@ -56,7 +56,7 @@ rc alias set "$ALIAS" "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/nul
 
 # ── Buckets ──────────────────────────────────────────────────────────────────
 # geo-data is anonymously readable and tiles is not, and that asymmetry is
-# forced by mcp-data-server: its DEFAULT DuckDB S3 secret is anonymous, so any
+# forced by geo-query: its DEFAULT DuckDB S3 secret is anonymous, so any
 # bucket it reads without a scoped secret must allow anonymous GET. The tiles
 # bucket gets a credentialed scoped secret instead (see S3_SOURCES in
 # docker-compose.yml) because register_hex_tiles has to WRITE to it, and an

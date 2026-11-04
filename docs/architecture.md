@@ -40,7 +40,7 @@ taught to rewrite that prefix back to `s3://` via `S3_SOURCES`.
 | `/data/` | `rustfs:9000/` | range requests, unbuffered |
 | `/basemap/` | `basemap:8080/` | rendered tiles + glyphs, 1-day cache |
 
-The `/tiles/` versus `/titiler/` split catches people. `mcp-data-server` mounts
+The `/tiles/` versus `/titiler/` split catches people. `geo-query` mounts
 its own `/tiles/{namespace}/{name}/{z}/{x}/{y}.pbf` route for hex pyramids
 built by `register_hex_tiles`, and advertises those URLs to the browser using
 `MCP_PUBLIC_BASE_URL`. TiTiler cannot have `/tiles/`; it would shadow them.
@@ -55,7 +55,7 @@ in one lump after a long silence and the UI looks hung.
 
 Two buckets with deliberately different policies:
 
-- **`geo-data`** — anonymous read. Forced by `mcp-data-server`: its default
+- **`geo-data`** — anonymous read. Forced by `geo-query`: its default
   DuckDB S3 secret is anonymous, so anything it reads without a scoped secret
   must allow anonymous GET.
 - **`tiles`** — credentialed read/write. `register_hex_tiles` writes here, and

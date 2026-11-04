@@ -17,7 +17,7 @@ Before adding any URL to any file, ask which phase it runs in. If the answer is
 | Repo | Role |
 |---|---|
 | [geo-agent](https://github.com/SchmidtDSE/glen) | Core library. Snapshotted into the webapp image at `GEO_AGENT_REF`, then patched. Never modified here. |
-| [mcp-data-server](https://github.com/boettiger-lab/mcp-data-server) | SQL + STAC backend. Used as a published image (pin `MCP_TAG` to a version tag — `latest` has shipped broken), configured by env only. |
+| [geo-query](https://github.com/SchmidtDSE/geo-query) | SQL + STAC backend. Used as a published image (pin `MCP_TAG` to a version tag — `latest` has shipped broken), configured by env only. |
 | [geo-agent-template](https://github.com/boettiger-lab/geo-agent-template) | The online template this is the offline sibling of. |
 
 ## What to edit, and what not to
@@ -93,7 +93,7 @@ uploading a STAC catalog full of unsubstituted `${PUBLIC_ORIGIN}` strings.
 `seed/entrypoint.sh` now asserts its userland up front; extend that list if you
 add a tool.
 
-**Floating image tags.** `mcp-data-server:latest` has published as an image with
+**Floating image tags.** The MCP image's `latest` tag has published as an image with
 an empty `/app` and `CMD ["python3"]` — it starts a REPL, gets no stdin, exits 0,
 and under `restart: unless-stopped` flaps forever logging nothing. Pin version
 tags for anything load-bearing.

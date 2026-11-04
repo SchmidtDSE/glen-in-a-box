@@ -258,7 +258,7 @@ single-user box or a closed network, and not one for anything wider.
 
 Upstream: [geo-agent](https://github.com/SchmidtDSE/glen) ·
 [docs](https://schmidtdse.github.io/glen/) ·
-[mcp-data-server](https://github.com/boettiger-lab/mcp-data-server)
+[geo-query](https://github.com/SchmidtDSE/geo-query)
 
 ---
 
