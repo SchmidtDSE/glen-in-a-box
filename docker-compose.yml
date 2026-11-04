@@ -19,7 +19,7 @@
 #   /data/         → rustfs:9000/          (S3: parquet, pmtiles, STAC)
 #   /basemap/      → basemap:8080/         (raster tiles + glyphs)
 #
-# The `/tiles/` vs `/titiler/` split is not cosmetic. mcp-data-server mounts
+# The `/tiles/` vs `/titiler/` split is not cosmetic. geo-query mounts
 # its own `/tiles/{namespace}/{name}/{z}/{x}/{y}.pbf` route for hex pyramids
 # built by register_hex_tiles, and it advertises those URLs to the browser
 # using MCP_PUBLIC_BASE_URL. TiTiler therefore cannot own /tiles/.
@@ -122,7 +122,7 @@ services:
   # ── Object store ──────────────────────────────────────────────────────────
   # Holds the STAC catalog, parquet, and PMTiles. Two buckets with different
   # access models (see seed/entrypoint.sh):
-  #   geo-data — anonymous read. mcp-data-server's DEFAULT DuckDB secret is
+  #   geo-data — anonymous read. geo-query's DEFAULT DuckDB secret is
   #              anonymous, so this bucket must be world-readable in-network.
   #   tiles    — credentialed read/write, for register_hex_tiles output.
   rustfs:
@@ -173,7 +173,7 @@ services:
   # no error in the log. Pin a version tag and bump it deliberately.
   mcp:
     <<: *restart
-    image: ghcr.io/boettiger-lab/mcp-data-server:${MCP_TAG:-v0.8.1}
+    image: ghcr.io/schmidtdse/geo-query:${MCP_TAG:-v0.8.1}
     environment:
       # Default (anonymous) DuckDB S3 secret → the local rustfs.
       S3_DEFAULT_ENDPOINT: rustfs:9000

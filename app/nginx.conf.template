@@ -101,7 +101,7 @@ server {
         access_log off;
     }
 
-    # mcp-data-server mounts its own /tiles/{ns}/{name}/{z}/{x}/{y}.pbf route
+    # geo-query mounts its own /tiles/{ns}/{name}/{z}/{x}/{y}.pbf route
     # for hex pyramids built by register_hex_tiles, and advertises those URLs
     # to the browser via MCP_PUBLIC_BASE_URL. This is why TiTiler lives at
     # /titiler/ and not at the more obvious /tiles/.

@@ -192,7 +192,7 @@ the probe is then refused while the service answers every real request. It
 depends on the image's `/etc/hosts`, so it can appear after an unrelated rebuild.
 
 The other variant is a probe using a binary the image does not ship: `curl` is
-absent from `maptiler/tileserver-gl` and from `mcp-data-server`.
+absent from `maptiler/tileserver-gl` and from `geo-query`.
 
 ## A variable in `.env` seems to be ignored
 
@@ -366,7 +366,7 @@ pre-install the extensions in your own.
 
 ## Queries fail with an S3 or access-denied error
 
-The `geo-data` bucket must be anonymously readable — `mcp-data-server`'s
+The `geo-data` bucket must be anonymously readable — `geo-query`'s
 default DuckDB secret is anonymous. Re-run `make seed`, which reapplies the
 policy, and check `S3_SOURCES` in `docker-compose.yml` still points at your
 actual `PUBLIC_ORIGIN`.
